@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #fffdf6;
+  color: #1a1508;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #f0dfa0;
+  border-radius: 999px;
+}
+
+@keyframes drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(18px, -22px) scale(1.12); }
+  66% { transform: translate(-14px, 14px) scale(0.92); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-24px, 18px) scale(1.15); }
+}
+@keyframes drift-c {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(16px, 16px) scale(0.9); }
+  70% { transform: translate(-10px, -10px) scale(1.08); }
+}
+
+.orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(32px);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.orb-a { animation: drift-a 14s ease-in-out infinite; }
+.orb-b { animation: drift-b 18s ease-in-out infinite; }
+.orb-c { animation: drift-c 11s ease-in-out infinite; }
+
+@keyframes shimmer {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.shimmer-text {
+  background: linear-gradient(90deg, #4a3a08, #ffffff, #fff4c2, #4a3a08);
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 4s linear infinite;
+}
+
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.bounce-dot { animation: bounce-dot 1.2s ease-in-out infinite; }
+
+/* Voice mode */
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.055); }
+}
+.voice-orb-idle { animation: orb-breathe 3.4s ease-in-out infinite; }
+
+@keyframes orb-spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.voice-orb-spin { animation: orb-spin-slow 6s linear infinite; }
+
+@keyframes ring-expand {
+  0% { transform: scale(0.75); opacity: 0.45; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+.voice-ring { animation: ring-expand 2.2s ease-out infinite; border: 1.5px solid rgba(245, 197, 24, 0.55); }
