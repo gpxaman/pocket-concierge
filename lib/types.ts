@@ -24,6 +24,64 @@ export interface CatalogItem {
   rating?: number;
   etaMinutes?: number;
   location?: string;
+  /** First-class veg/non-veg flag (food items) — mirrors the Zomato/DoorDash veg dot. */
+  veg?: boolean;
+  /** Strike-through original price, shown alongside `price` when discounted (grocery, Blinkit-style). */
+  mrp?: number;
+  /** Menu section a food item belongs to, e.g. "Starters", "Mains" (Zomato/DoorDash-style categorized menu). */
+  menuSection?: string;
+  /** Highlighted as a bestseller on the restaurant menu. */
+  isBestseller?: boolean;
+  /** Pack size, e.g. "500 g", "1 L" (grocery only). */
+  weight?: string;
+  /** Which grocery shelf/category this product belongs to (Blinkit-style subcategory). */
+  groceryCategoryId?: string;
+  /** Max occupancy for a hotel room. */
+  maxGuests?: number;
+  /** e.g. "1 King Bed", "2 Queen Beds" (hotel rooms only). */
+  bedType?: string;
+  /** Breakfast included in the room rate. */
+  breakfastIncluded?: boolean;
+  /** Free cancellation up to check-in vs. non-refundable (Booking.com-style policy flag). */
+  freeCancellation?: boolean;
+}
+
+export interface Restaurant {
+  id: string; // matches the providerId used by this restaurant's food CatalogItems
+  name: string;
+  cuisines: string[];
+  rating: number;
+  ratingCount: number;
+  deliveryEtaMinutes: number;
+  priceForTwo: number;
+  area: string;
+  isPureVeg: boolean;
+  offer?: string;
+  /** Placeholder banner gradient — no real photos in this prototype. */
+  gradientFrom: string;
+  gradientTo: string;
+}
+
+export interface GroceryCategoryMeta {
+  id: string;
+  label: string;
+}
+
+export interface Hotel {
+  id: string; // matches the providerId used by this hotel's room CatalogItems
+  name: string;
+  /** Hotel class, 1-5 stars. */
+  starRating: number;
+  /** Booking.com-style guest review score, 0-10. */
+  reviewScore: number;
+  reviewCount: number;
+  area: string;
+  address: string;
+  amenities: string[];
+  description: string;
+  /** Placeholder banner gradient — no real photos in this prototype. */
+  gradientFrom: string;
+  gradientTo: string;
 }
 
 export type TransactionType = "ORDER" | "BOOKING" | "RIDE";
@@ -36,6 +94,14 @@ export type TransactionStatus =
   | "in_progress"
   | "completed"
   | "cancelled";
+
+export interface TransactionLineItem {
+  itemId: string;
+  title: string;
+  providerName: string;
+  qty: number;
+  price: number;
+}
 
 export interface Transaction {
   id: string;
@@ -50,6 +116,16 @@ export interface Transaction {
   updatedAt: number;
   meta?: Record<string, string>;
   history: { status: TransactionStatus; at: number; note?: string }[];
+  /** Multi-item orders (e.g. AI-agent checkout of a cart). Absent for single-item drafts. */
+  items?: TransactionLineItem[];
+  /** Estimated arrival, set at checkout for orders/rides with a known ETA. */
+  etaMinutes?: number;
+  placedBy?: "USER" | "AI_AGENT";
+}
+
+export interface CartItem {
+  itemId: string;
+  qty: number;
 }
 
 export interface Preference {
@@ -95,8 +171,10 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   itemIds?: string[];
-  mode?: "claude" | "gemini" | "fallback";
+  mode?: "claude" | "gemini" | "openrouter" | "fallback";
   createdAt: number;
+  /** An image attached to this turn (base64 data URL), shown as a thumbnail in the transcript. */
+  imageDataUrl?: string;
 }
 
 // --- Snap (camera + filters) + creator registration ---

@@ -22,12 +22,30 @@ const CHECKOUT_ROUTE: Partial<Record<CatalogItem["category"], string>> = {
   food: "/explore/food",
 };
 
-export default function ItemCard({ item, compact = false }: { item: CatalogItem; compact?: boolean }) {
+export default function ItemCard({
+  item,
+  compact = false,
+  mode = "draft",
+}: {
+  item: CatalogItem;
+  compact?: boolean;
+  /** "draft" (default): the Explore-tab flow — creates a draft transaction, authorized later in Activity.
+   *  "cart": the AI-agent flow — adds to the working cart the concierge checks out from. */
+  mode?: "draft" | "cart";
+}) {
   const createDraft = useAppStore((s) => s.createDraft);
+  const addToCart = useAppStore((s) => s.addToCart);
   const [added, setAdded] = useState(false);
 
   const checkoutRoute = CHECKOUT_ROUTE[item.category];
-  const actionLabel = item.category === "hotels" ? "Draft booking" : "Add to draft";
+  const actionLabel =
+    mode === "cart"
+      ? "Add to cart"
+      : item.category === "hotels"
+        ? "Draft booking"
+        : item.category === "rides"
+          ? "Draft ride"
+          : "Add to draft";
   const Icon = CATEGORY_ICON[item.category];
 
   return (
@@ -73,7 +91,8 @@ export default function ItemCard({ item, compact = false }: { item: CatalogItem;
           ) : (
             <button
               onClick={() => {
-                createDraft(item, txTypeFor(item.category));
+                if (mode === "cart") addToCart(item.id, 1);
+                else createDraft(item, txTypeFor(item.category));
                 setAdded(true);
                 setTimeout(() => setAdded(false), 1800);
               }}

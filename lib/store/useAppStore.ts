@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
   AuditRecord,
+  CartItem,
   CatalogItem,
   ChatMessage,
   MemoryItem,
@@ -13,6 +14,11 @@ import {
   TransactionStatus,
 } from "@/lib/types";
 import { BRAND_LABEL, detectBrand, last4Of } from "@/lib/payments";
+import { cartWithItemAdded, findById } from "@/lib/data/catalog";
+import { priceCart, priceStay, priceRide } from "@/lib/pricing";
+import { pointsForAmount } from "@/lib/loyalty";
+import { findRideType } from "@/lib/data/rideTypes";
+import { Driver, pickDriver } from "@/lib/data/drivers";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -42,8 +48,12 @@ interface AppState {
   personalizationEnabled: boolean;
   chatMessages: ChatMessage[];
   displayName: string;
+  cart: CartItem[];
+  /** Lifetime loyalty points — see lib/loyalty.ts for tiers and the earn rate. */
+  points: number;
 
   logAudit: (a: Omit<AuditRecord, "id" | "timestamp" | "correlationId"> & { correlationId?: string }) => void;
+  addPoints: (amount: number) => void;
 
   createDraft: (item: CatalogItem, type: Transaction["type"]) => Transaction;
   authorizeTransaction: (
@@ -70,6 +80,44 @@ interface AppState {
   addChatMessage: (m: ChatMessage) => void;
   clearChat: () => void;
   setDisplayName: (name: string) => void;
+
+  /** Returns whether adding this item reset the cart to switch restaurants (single-restaurant-food-cart rule). */
+  addToCart: (itemId: string, qty?: number) => { restaurantSwitched: boolean };
+  removeFromCart: (itemId: string) => void;
+  setCartQty: (itemId: string, qty: number) => void;
+  clearCart: () => void;
+  setCart: (cart: CartItem[]) => void;
+  placeOrderFromCart: (
+    source: PaymentSource,
+    opts?: { placedBy?: "USER" | "AI_AGENT" }
+  ) =>
+    | { ok: true; transaction: Transaction }
+    | { ok: false; reason: "empty_cart" | "insufficient_balance" | "no_payment_method" };
+
+  /** Books a hotel room for a date range — a separate flow from the cart (dates/nights, not qty). */
+  bookHotel: (
+    input: { itemId: string; checkIn: string; checkOut: string; guests: number; source: PaymentSource },
+    opts?: { placedBy?: "USER" | "AI_AGENT" }
+  ) =>
+    | { ok: true; transaction: Transaction }
+    | { ok: false; reason: "invalid_dates" | "not_found" | "insufficient_balance" | "no_payment_method" };
+
+  /** Books a ride for a pickup/drop pair — distance-priced, not catalog-priced (see lib/pricing.ts's priceRide). */
+  bookRide: (
+    input: { rideTypeId: string; pickup: string; drop: string; distanceKm: number; source: PaymentSource },
+    opts?: { placedBy?: "USER" | "AI_AGENT" }
+  ) =>
+    | { ok: true; transaction: Transaction; driver: Driver }
+    | { ok: false; reason: "invalid_ride_type" | "insufficient_balance" | "no_payment_method" };
+}
+
+function etaMinutesFor(items: { itemId: string; qty: number }[]): number | undefined {
+  const catalogItems = items.map((i) => findById(i.itemId)).filter((i): i is CatalogItem => Boolean(i));
+  if (catalogItems.length === 0) return undefined;
+  const withEta = catalogItems.filter((i) => typeof i.etaMinutes === "number");
+  if (withEta.length > 0) return Math.max(...withEta.map((i) => i.etaMinutes!));
+  if (catalogItems.every((i) => i.category === "grocery")) return 120;
+  return undefined;
 }
 
 const LIFECYCLES: Record<Transaction["type"], TransactionStatus[]> = {
@@ -91,6 +139,10 @@ export const useAppStore = create<AppState>()(
       personalizationEnabled: true,
       chatMessages: [],
       displayName: "",
+      cart: [],
+      points: 0,
+
+      addPoints: (amount) => set((s) => ({ points: s.points + amount })),
 
       logAudit: (a) =>
         set((s) => ({
@@ -341,6 +393,315 @@ export const useAppStore = create<AppState>()(
       addChatMessage: (m) => set((s) => ({ chatMessages: [...s.chatMessages, m] })),
       clearChat: () => set({ chatMessages: [] }),
       setDisplayName: (name) => set({ displayName: name }),
+
+      addToCart: (itemId, qty = 1) => {
+        const { cart, restaurantSwitched } = cartWithItemAdded(get().cart, itemId, qty);
+        set({ cart });
+        return { restaurantSwitched };
+      },
+      removeFromCart: (itemId) => set((s) => ({ cart: s.cart.filter((c) => c.itemId !== itemId) })),
+      setCartQty: (itemId, qty) =>
+        set((s) => ({
+          cart: qty <= 0 ? s.cart.filter((c) => c.itemId !== itemId) : s.cart.map((c) => (c.itemId === itemId ? { ...c, qty } : c)),
+        })),
+      clearCart: () => set({ cart: [] }),
+      setCart: (cart) => set({ cart }),
+
+      placeOrderFromCart: (source, opts) => {
+        const cart = get().cart;
+        if (cart.length === 0) return { ok: false as const, reason: "empty_cart" as const };
+
+        const lineItems: Transaction["items"] = cart
+          .map((c) => {
+            const item = findById(c.itemId);
+            return item
+              ? { itemId: item.id, title: item.title, providerName: item.providerName, qty: c.qty, price: item.price }
+              : null;
+          })
+          .filter((i): i is NonNullable<typeof i> => i !== null);
+
+        if (lineItems.length === 0) return { ok: false as const, reason: "empty_cart" as const };
+
+        // Total includes delivery/platform/GST — matches exactly what the manual
+        // checkout page (and the AI agent's place_order) shows before confirming.
+        const total = priceCart(cart).total;
+        const useWallet = source === "wallet";
+
+        let sourceLabel: string;
+        if (useWallet) {
+          if (get().walletBalance < total) {
+            get().logAudit({
+              actorType: "AI_AGENT",
+              action: "purchase_blocked",
+              resourceType: "order",
+              policyDecision: "blocked",
+              detail: `Insufficient wallet balance for ₹${total} order (PRD §8 policy check).`,
+            });
+            return { ok: false as const, reason: "insufficient_balance" as const };
+          }
+          sourceLabel = "Wallet balance";
+        } else {
+          const methods = get().paymentMethods;
+          const method = methods.find((m) => m.id === source) ?? methods.find((m) => m.isDefault) ?? methods[0];
+          if (!method) return { ok: false as const, reason: "no_payment_method" as const };
+          sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
+        }
+
+        const now = Date.now();
+        const providerNames = Array.from(new Set(lineItems.map((i) => i.providerName)));
+        const titleSummary =
+          lineItems.length === 1
+            ? lineItems[0].title
+            : `${lineItems.reduce((n, i) => n + i.qty, 0)} items from ${providerNames.join(", ")}`;
+
+        const tx: Transaction = {
+          id: uid("txn"),
+          type: "ORDER",
+          status: "pending_vendor",
+          itemId: lineItems[0].itemId,
+          itemTitle: titleSummary,
+          providerName: providerNames.join(", "),
+          amount: total,
+          currency: "INR",
+          createdAt: now,
+          updatedAt: now,
+          meta: { card: sourceLabel },
+          history: [
+            { status: "draft", at: now },
+            { status: "pending_vendor", at: now },
+          ],
+          items: lineItems,
+          etaMinutes: etaMinutesFor(cart),
+          placedBy: opts?.placedBy ?? "AI_AGENT",
+        };
+
+        set((s) => ({
+          transactions: [tx, ...s.transactions],
+          walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
+          cart: [],
+          points: s.points + pointsForAmount(total),
+          ledger: [
+            {
+              id: uid("ledg"),
+              transactionId: tx.id,
+              amount: total,
+              direction: "debit",
+              note: `ORDER · ${titleSummary}`,
+              sourceLabel,
+              at: now,
+            },
+            ...s.ledger,
+          ],
+        }));
+
+        get().logAudit({
+          actorType: "USER",
+          action: "purchase_authorized",
+          resourceType: "order",
+          resourceId: tx.id,
+          policyDecision: "allowed",
+          detail: `User confirmed ₹${total} order via the AI concierge, charged to ${sourceLabel} (PRD §8).`,
+        });
+        get().logAudit({
+          actorType: "AI_AGENT",
+          action: "order_placed",
+          resourceType: "order",
+          resourceId: tx.id,
+          policyDecision: "allowed",
+          detail: `Placed order for ${titleSummary} — ₹${total}.`,
+        });
+
+        return { ok: true as const, transaction: tx };
+      },
+
+      bookHotel: ({ itemId, checkIn, checkOut, guests, source }, opts) => {
+        const item = findById(itemId);
+        if (!item || item.category !== "hotels") return { ok: false as const, reason: "not_found" as const };
+
+        // Validated here (not via the clamping nightsBetween display helper) so a
+        // bad date range is rejected rather than silently treated as 1 night.
+        const checkInMs = new Date(`${checkIn}T00:00:00`).getTime();
+        const checkOutMs = new Date(`${checkOut}T00:00:00`).getTime();
+        if (!Number.isFinite(checkInMs) || !Number.isFinite(checkOutMs) || checkOutMs <= checkInMs) {
+          return { ok: false as const, reason: "invalid_dates" as const };
+        }
+        const nights = Math.round((checkOutMs - checkInMs) / 86_400_000);
+
+        const { total } = priceStay(item.price, nights);
+        const useWallet = source === "wallet";
+
+        let sourceLabel: string;
+        if (useWallet) {
+          if (get().walletBalance < total) {
+            get().logAudit({
+              actorType: "USER",
+              action: "purchase_blocked",
+              resourceType: "booking",
+              policyDecision: "blocked",
+              detail: `Insufficient wallet balance for ₹${total} booking (PRD §8 policy check).`,
+            });
+            return { ok: false as const, reason: "insufficient_balance" as const };
+          }
+          sourceLabel = "Wallet balance";
+        } else {
+          const methods = get().paymentMethods;
+          const method = methods.find((m) => m.id === source) ?? methods.find((m) => m.isDefault) ?? methods[0];
+          if (!method) return { ok: false as const, reason: "no_payment_method" as const };
+          sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
+        }
+
+        const now = Date.now();
+        const nightsLabel = `${nights} night${nights > 1 ? "s" : ""}`;
+
+        const tx: Transaction = {
+          id: uid("txn"),
+          type: "BOOKING",
+          status: "confirmed",
+          itemId: item.id,
+          itemTitle: `${item.title} · ${nightsLabel}`,
+          providerName: item.providerName,
+          amount: total,
+          currency: "INR",
+          createdAt: now,
+          updatedAt: now,
+          meta: { card: sourceLabel, checkIn, checkOut, guests: String(guests), nights: String(nights) },
+          history: [
+            { status: "draft", at: now },
+            { status: "confirmed", at: now },
+          ],
+          placedBy: opts?.placedBy ?? "USER",
+        };
+
+        set((s) => ({
+          transactions: [tx, ...s.transactions],
+          walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
+          points: s.points + pointsForAmount(total),
+          ledger: [
+            {
+              id: uid("ledg"),
+              transactionId: tx.id,
+              amount: total,
+              direction: "debit",
+              note: `BOOKING · ${item.title} (${nightsLabel})`,
+              sourceLabel,
+              at: now,
+            },
+            ...s.ledger,
+          ],
+        }));
+
+        get().logAudit({
+          actorType: "USER",
+          action: "booking_confirmed",
+          resourceType: "booking",
+          resourceId: tx.id,
+          policyDecision: "allowed",
+          detail: `User confirmed ₹${total} booking for ${item.title} (${checkIn} to ${checkOut}, ${guests} guest${
+            guests > 1 ? "s" : ""
+          }) on ${sourceLabel}.`,
+        });
+        if (opts?.placedBy === "AI_AGENT") {
+          get().logAudit({
+            actorType: "AI_AGENT",
+            action: "booking_placed",
+            resourceType: "booking",
+            resourceId: tx.id,
+            policyDecision: "allowed",
+            detail: `Booked ${item.title} at ${item.providerName} — ₹${total}.`,
+          });
+        }
+
+        return { ok: true as const, transaction: tx };
+      },
+
+      bookRide: ({ rideTypeId, pickup, drop, distanceKm, source }, opts) => {
+        const rideType = findRideType(rideTypeId);
+        if (!rideType) return { ok: false as const, reason: "invalid_ride_type" as const };
+
+        const { total } = priceRide(rideType, distanceKm);
+        const useWallet = source === "wallet";
+
+        let sourceLabel: string;
+        if (useWallet) {
+          if (get().walletBalance < total) {
+            get().logAudit({
+              actorType: "USER",
+              action: "purchase_blocked",
+              resourceType: "ride",
+              policyDecision: "blocked",
+              detail: `Insufficient wallet balance for ₹${total} ride (PRD §8 policy check).`,
+            });
+            return { ok: false as const, reason: "insufficient_balance" as const };
+          }
+          sourceLabel = "Wallet balance";
+        } else {
+          const methods = get().paymentMethods;
+          const method = methods.find((m) => m.id === source) ?? methods.find((m) => m.isDefault) ?? methods[0];
+          if (!method) return { ok: false as const, reason: "no_payment_method" as const };
+          sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
+        }
+
+        const driver = pickDriver(rideType.id);
+        const now = Date.now();
+
+        const tx: Transaction = {
+          id: uid("txn"),
+          type: "RIDE",
+          status: "confirmed",
+          itemId: rideType.id,
+          itemTitle: `${rideType.label} · ${pickup} → ${drop}`,
+          providerName: driver.name,
+          amount: total,
+          currency: "INR",
+          createdAt: now,
+          updatedAt: now,
+          meta: {
+            card: sourceLabel,
+            pickup,
+            drop,
+            distanceKm: String(distanceKm),
+            driverName: driver.name,
+            vehicleModel: driver.vehicleModel,
+            vehicleNumber: driver.vehicleNumber,
+            driverRating: String(driver.rating),
+          },
+          history: [
+            { status: "draft", at: now },
+            { status: "confirmed", at: now },
+          ],
+          etaMinutes: rideType.etaMinutes,
+          placedBy: opts?.placedBy ?? "USER",
+        };
+
+        set((s) => ({
+          transactions: [tx, ...s.transactions],
+          walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
+          points: s.points + pointsForAmount(total),
+          ledger: [
+            {
+              id: uid("ledg"),
+              transactionId: tx.id,
+              amount: total,
+              direction: "debit",
+              note: `RIDE · ${rideType.label} (${pickup} → ${drop})`,
+              sourceLabel,
+              at: now,
+            },
+            ...s.ledger,
+          ],
+        }));
+
+        get().logAudit({
+          actorType: "USER",
+          action: "ride_confirmed",
+          resourceType: "ride",
+          resourceId: tx.id,
+          policyDecision: "allowed",
+          detail: `User confirmed ₹${total} ${rideType.label} ride (${pickup} to ${drop}) on ${sourceLabel}.`,
+        });
+
+        return { ok: true as const, transaction: tx, driver };
+      },
     }),
     { name: "pocket-concierge-store", version: 3 }
   )

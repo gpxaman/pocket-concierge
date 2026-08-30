@@ -6,17 +6,20 @@ import { CATEGORY_META } from "@/lib/data/categories";
 import { CATEGORY_ICON } from "@/lib/data/categoryIcons";
 import ItemCard from "@/components/ItemCard";
 
-const DEDICATED_CATEGORIES = new Set(["rides", "food"]);
+// Food, Grocery, Hotels and Rides have their own dedicated flows
+// (app/explore/food, app/explore/grocery, app/explore/hotels,
+// app/explore/rides) — Next resolves those static routes before this
+// dynamic one for those exact paths, but they're excluded here too so
+// this page's own static generation doesn't pre-render for them.
+const DEDICATED_CATEGORIES = new Set(["food", "grocery", "hotels", "rides"]);
 
 export function generateStaticParams() {
-  // "rides" and "food" have their own dedicated booking/ordering flows —
-  // those static routes always win the match, so pre-rendering this
-  // generic one for them too would just be a dead, unreachable page.
   return CATEGORY_META.filter((c) => !DEDICATED_CATEGORIES.has(c.id)).map((c) => ({ category: c.id }));
 }
 
 export default async function CategoryPage({ params }: { params: Promise<{ category: string }> }) {
   const { category } = await params;
+  if (DEDICATED_CATEGORIES.has(category)) notFound();
   const meta = CATEGORY_META.find((c) => c.id === category);
   if (!meta) notFound();
 
