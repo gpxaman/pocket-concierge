@@ -254,28 +254,31 @@ async function runGemini(
 // list is a known-good baseline (curated for tool-calling support); it's
 // merged with a live, cached fetch of whatever's currently free on
 // OpenRouter so newly added free models get picked up automatically.
-// Ordered by expected reliability at multi-turn tool calling, not just raw
-// capability — larger/more established models first, small MoE ("A4B"-style
-// active-param) and preview models last, since those have been observed
-// narrating cart actions ("Done, removed it!") without ever calling the tool.
+// Ordered for LOW LATENCY first (small/"flash"/"lightning"/"mini"-class
+// models before large ones — this app is voice-first, so response speed
+// matters more than squeezing out the last bit of quality), with the
+// biggest, slowest models pushed to the end since they were also the ones
+// observed hitting OpenRouter's shared free-tier daily cap first. The
+// untrustworthy-no-tool-call retry below still catches a fast model that
+// skips a required tool call, so speed-first ordering doesn't sacrifice
+// correctness.
 const OPENROUTER_STATIC_MODELS = [
-  "z-ai/glm-5.2:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "inclusionai/ling-3.0-flash-fin:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "liquid/lfm-2.5-2.6b:free",
+  "poolside/laguna-xs-2.1:free",
+  "cohere/north-mini-code:free",
+  "google/gemma-4-31b-it:free",
+  "minimax/minimax-m2.7:free",
+  "dots-studio/dots-3-note-preview:free",
+  "poolside/laguna-s-2.1:free",
+  "thinkingmachines/inkling:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
   "minimax/minimax-m3:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "minimax/minimax-m2.7:free",
-  "nvidia/nemotron-3.5-lightning:free",
-  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-  "google/gemma-4-31b-it:free",
-  "google/gemma-4-26b-a4b-it:free",
-  "inclusionai/ling-3.0-flash-fin:free",
-  "dots-studio/dots-3-note-preview:free",
-  "liquid/lfm-2.5-2.6b:free",
-  "thinkingmachines/inkling:free",
-  "thinkingmachines/inkling-small:free",
-  "poolside/laguna-s-2.1:free",
-  "poolside/laguna-xs-2.1:free",
-  "cohere/north-mini-code:free",
+  "z-ai/glm-5.2:free",
   "openrouter/free", // OpenRouter's own free-model auto-router — last resort catch-all
 ];
 
@@ -340,22 +343,40 @@ interface OpenRouterResponse {
   error?: unknown;
 }
 
+// Voice-first UX means a model that's merely slow (not erroring) is just as
+// bad as one that's down — cap each candidate's turn so a laggy free model
+// can't stall the whole reply; a timeout counts as a failure and moves to
+// the next candidate in the rotation.
+const OPENROUTER_MODEL_TIMEOUT_MS = 12_000;
+
 async function callOpenRouter(apiKey: string, model: string, messages: OpenRouterMessage[]): Promise<OpenRouterResponse> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://pocket-concierge.local",
-      "X-Title": "Pocket Concierge",
-    },
-    body: JSON.stringify({ model, messages, tools: OPENAI_TOOLS, tool_choice: "auto" }),
-  });
-  const data = (await res.json()) as OpenRouterResponse;
-  if (!res.ok || data.error) {
-    throw new Error(`OpenRouter ${model} failed: ${res.status} ${JSON.stringify(data.error ?? data)}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_MODEL_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://pocket-concierge.local",
+        "X-Title": "Pocket Concierge",
+      },
+      body: JSON.stringify({ model, messages, tools: OPENAI_TOOLS, tool_choice: "auto" }),
+      signal: controller.signal,
+    });
+    const data = (await res.json()) as OpenRouterResponse;
+    if (!res.ok || data.error) {
+      throw new Error(`OpenRouter ${model} failed: ${res.status} ${JSON.stringify(data.error ?? data)}`);
+    }
+    return data;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`OpenRouter ${model} timed out after ${OPENROUTER_MODEL_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 async function runOpenRouter(

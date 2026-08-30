@@ -452,7 +452,15 @@ export default function HomeAgent() {
           </AnimatePresence>
 
           {loading && (
-            <div className="flex items-center gap-2 rounded-2xl bg-white/10 px-4 py-2.5 text-xs text-white/40 w-fit">
+            <div className="flex items-center gap-2 rounded-2xl bg-white/10 px-4 py-2.5 text-xs text-white/50 w-fit">
+              <motion.span
+                animate={{ rotate: 360 }}
+                transition={{ repeat: Infinity, duration: 2.2, ease: "linear" }}
+                className="text-accent"
+              >
+                <Sparkles size={13} />
+              </motion.span>
+              <span>Thinking</span>
               <span className="flex gap-0.5">
                 <span className="bounce-dot" style={{ animationDelay: "0ms" }}>●</span>
                 <span className="bounce-dot" style={{ animationDelay: "150ms" }}>●</span>
