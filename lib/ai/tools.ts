@@ -1,4 +1,5 @@
-import { CATALOG, findById } from "@/lib/data/catalog";
+import { CATALOG, cartWithItemAdded, findById } from "@/lib/data/catalog";
+import { priceCart } from "@/lib/pricing";
 import { CartItem, CatalogItem, ServiceCategory } from "@/lib/types";
 
 // Typed tool contracts (TRD §8.3). search_catalog/get_item are read-only —
@@ -109,10 +110,15 @@ function trim(item: CatalogItem) {
     title: item.title,
     subtitle: item.subtitle,
     price: item.price,
+    mrp: item.mrp,
     currency: item.currency,
     rating: item.rating,
     eta_minutes: item.etaMinutes,
     location: item.location,
+    veg: item.veg,
+    menu_section: item.menuSection,
+    bestseller: item.isBestseller,
+    weight: item.weight,
     attributes: item.attributes,
   };
 }
@@ -164,15 +170,15 @@ function cartSummary(cart: CartItem[]) {
 }
 
 /** Mutates and returns a new cart array — callers keep the returned value as the running cart for the rest of the tool loop. */
-export function executeAddToCart(cart: CartItem[], input: { item_id: string; qty?: number }): { cart: CartItem[]; summary: ReturnType<typeof cartSummary> } {
+export function executeAddToCart(
+  cart: CartItem[],
+  input: { item_id: string; qty?: number }
+): { cart: CartItem[]; summary: ReturnType<typeof cartSummary>; restaurant_switched: boolean } {
   const item = findById(input.item_id);
-  if (!item) return { cart, summary: cartSummary(cart) };
+  if (!item) return { cart, summary: cartSummary(cart), restaurant_switched: false };
   const qty = input.qty && input.qty > 0 ? input.qty : 1;
-  const existing = cart.find((c) => c.itemId === input.item_id);
-  const next = existing
-    ? cart.map((c) => (c.itemId === input.item_id ? { ...c, qty: c.qty + qty } : c))
-    : [...cart, { itemId: input.item_id, qty }];
-  return { cart: next, summary: cartSummary(next) };
+  const { cart: next, restaurantSwitched } = cartWithItemAdded(cart, input.item_id, qty);
+  return { cart: next, summary: cartSummary(next), restaurant_switched: restaurantSwitched };
 }
 
 export function executeRemoveFromCart(cart: CartItem[], input: { item_id: string }): { cart: CartItem[]; summary: ReturnType<typeof cartSummary> } {
@@ -198,12 +204,16 @@ export function describeCartState(cart: CartItem[]): string {
 export function executePlaceOrder(cart: CartItem[], walletBalance: number) {
   const summary = cartSummary(cart);
   if (summary.length === 0) return { ok: false as const, reason: "empty_cart" as const };
-  const total = summary.reduce((sum, i) => sum + i.price * i.qty, 0);
+  // Same breakdown the manual checkout page shows (delivery/platform fee, GST)
+  // — the AI agent's total must match what useAppStore.placeOrderFromCart
+  // actually charges, or a voice order would cost a different amount than
+  // what the agent just told the user.
+  const { total, deliveryFee, platformFee, gst } = priceCart(cart);
   if (walletBalance < total) {
     return { ok: false as const, reason: "insufficient_balance" as const, total, walletBalance, shortfall: total - walletBalance };
   }
   const catalogItems = cart.map((c) => findById(c.itemId)).filter((i): i is CatalogItem => Boolean(i));
   const etaCandidates = catalogItems.map((i) => i.etaMinutes).filter((n): n is number => typeof n === "number");
   const eta_minutes = etaCandidates.length > 0 ? Math.max(...etaCandidates) : undefined;
-  return { ok: true as const, items: summary, total, eta_minutes };
+  return { ok: true as const, items: summary, total, delivery_fee: deliveryFee, platform_fee: platformFee, gst, eta_minutes };
 }

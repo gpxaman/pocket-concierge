@@ -14,7 +14,8 @@ import {
   TransactionStatus,
 } from "@/lib/types";
 import { BRAND_LABEL, detectBrand, last4Of } from "@/lib/payments";
-import { findById } from "@/lib/data/catalog";
+import { cartWithItemAdded, findById } from "@/lib/data/catalog";
+import { priceCart } from "@/lib/pricing";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -74,7 +75,8 @@ interface AppState {
   clearChat: () => void;
   setDisplayName: (name: string) => void;
 
-  addToCart: (itemId: string, qty?: number) => void;
+  /** Returns whether adding this item reset the cart to switch restaurants (single-restaurant-food-cart rule). */
+  addToCart: (itemId: string, qty?: number) => { restaurantSwitched: boolean };
   removeFromCart: (itemId: string) => void;
   setCartQty: (itemId: string, qty: number) => void;
   clearCart: () => void;
@@ -367,14 +369,11 @@ export const useAppStore = create<AppState>()(
       clearChat: () => set({ chatMessages: [] }),
       setDisplayName: (name) => set({ displayName: name }),
 
-      addToCart: (itemId, qty = 1) =>
-        set((s) => {
-          const existing = s.cart.find((c) => c.itemId === itemId);
-          const cart = existing
-            ? s.cart.map((c) => (c.itemId === itemId ? { ...c, qty: c.qty + qty } : c))
-            : [...s.cart, { itemId, qty }];
-          return { cart };
-        }),
+      addToCart: (itemId, qty = 1) => {
+        const { cart, restaurantSwitched } = cartWithItemAdded(get().cart, itemId, qty);
+        set({ cart });
+        return { restaurantSwitched };
+      },
       removeFromCart: (itemId) => set((s) => ({ cart: s.cart.filter((c) => c.itemId !== itemId) })),
       setCartQty: (itemId, qty) =>
         set((s) => ({
@@ -398,7 +397,9 @@ export const useAppStore = create<AppState>()(
 
         if (lineItems.length === 0) return { ok: false as const, reason: "empty_cart" as const };
 
-        const total = lineItems.reduce((sum, i) => sum + i.price * i.qty, 0);
+        // Total includes delivery/platform/GST — matches exactly what the manual
+        // checkout page (and the AI agent's place_order) shows before confirming.
+        const total = priceCart(cart).total;
         const useWallet = source === "wallet";
 
         let sourceLabel: string;

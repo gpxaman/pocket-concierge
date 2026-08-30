@@ -24,6 +24,39 @@ export interface CatalogItem {
   rating?: number;
   etaMinutes?: number;
   location?: string;
+  /** First-class veg/non-veg flag (food items) — mirrors the Zomato/DoorDash veg dot. */
+  veg?: boolean;
+  /** Strike-through original price, shown alongside `price` when discounted (grocery, Blinkit-style). */
+  mrp?: number;
+  /** Menu section a food item belongs to, e.g. "Starters", "Mains" (Zomato/DoorDash-style categorized menu). */
+  menuSection?: string;
+  /** Highlighted as a bestseller on the restaurant menu. */
+  isBestseller?: boolean;
+  /** Pack size, e.g. "500 g", "1 L" (grocery only). */
+  weight?: string;
+  /** Which grocery shelf/category this product belongs to (Blinkit-style subcategory). */
+  groceryCategoryId?: string;
+}
+
+export interface Restaurant {
+  id: string; // matches the providerId used by this restaurant's food CatalogItems
+  name: string;
+  cuisines: string[];
+  rating: number;
+  ratingCount: number;
+  deliveryEtaMinutes: number;
+  priceForTwo: number;
+  area: string;
+  isPureVeg: boolean;
+  offer?: string;
+  /** Placeholder banner gradient — no real photos in this prototype. */
+  gradientFrom: string;
+  gradientTo: string;
+}
+
+export interface GroceryCategoryMeta {
+  id: string;
+  label: string;
 }
 
 export type TransactionType = "ORDER" | "BOOKING" | "RIDE";

@@ -6,12 +6,17 @@ import { CATEGORY_META } from "@/lib/data/categories";
 import { CATEGORY_ICON } from "@/lib/data/categoryIcons";
 import ItemCard from "@/components/ItemCard";
 
+// Food and Grocery have their own dedicated flows (app/explore/food,
+// app/explore/grocery) — Next resolves those static routes before this
+// dynamic one for those exact paths, but they're excluded here too so this
+// page's own static generation doesn't pre-render for them.
 export function generateStaticParams() {
-  return CATEGORY_META.map((c) => ({ category: c.id }));
+  return CATEGORY_META.filter((c) => c.id !== "food" && c.id !== "grocery").map((c) => ({ category: c.id }));
 }
 
 export default async function CategoryPage({ params }: { params: Promise<{ category: string }> }) {
   const { category } = await params;
+  if (category === "food" || category === "grocery") notFound();
   const meta = CATEGORY_META.find((c) => c.id === category);
   if (!meta) notFound();
 

@@ -28,6 +28,9 @@ Conversation shape:
   show the options on screen. Ground every claim in those results — never invent items, prices or providers.
 - If they want something added or ordered, use add_to_cart (and remove_from_cart to fix mistakes). Before
   spending any money, say out loud what's in the cart and the total price, and ask them to confirm.
+- Food carts hold items from one restaurant at a time (like Zomato/DoorDash). If add_to_cart returns
+  restaurant_switched: true, it means adding this item cleared out a different restaurant's items already in
+  the cart — mention that briefly so the user isn't surprised, don't just stay silent about it.
 - Call place_order ONLY on a turn where the user's latest message clearly confirms going ahead (e.g. "yes",
   "place it", "do it", "order it", "confirmed") after you've already stated the cart total. Never call it
   speculatively, and never call it on the same turn you first proposed the order.
@@ -116,8 +119,8 @@ function runToolByName(name: string, input: Record<string, unknown>, cart: CartI
   if (name === "get_item") return { result: executeGetItem((input as { item_id: string }).item_id), cart };
   if (name === "present_recommendations") return { result: { acknowledged: true }, cart };
   if (name === "add_to_cart") {
-    const { cart: next, summary } = executeAddToCart(cart, input as { item_id: string; qty?: number });
-    return { result: { cart: summary }, cart: next };
+    const { cart: next, summary, restaurant_switched } = executeAddToCart(cart, input as { item_id: string; qty?: number });
+    return { result: { cart: summary, restaurant_switched }, cart: next };
   }
   if (name === "remove_from_cart") {
     const { cart: next, summary } = executeRemoveFromCart(cart, input as { item_id: string });
