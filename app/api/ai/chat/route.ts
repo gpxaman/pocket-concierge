@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI, Content as GeminiContent, FunctionDeclaration } from "@google/genai";
 import {
   AI_TOOLS,
+  describeCartState,
   executeAddToCart,
   executeGetItem,
   executePlaceOrder,
@@ -79,9 +80,31 @@ function describeOrderResult(orderResult: ReturnType<typeof executePlaceOrder> |
   return null;
 }
 
+// Same reasoning as describeOrderResult: if the cart actually changed this
+// turn, the grounded post-state always wins over whatever the model said,
+// since a small model can narrate "removed it!" without the tool call
+// landing (wrong item_id, no call made, etc).
+function finalizeReply(finalText: string, cart: CartItem[], startingCart: CartItem[], orderResult: ReturnType<typeof executePlaceOrder> | null): string {
+  const grounded = describeOrderResult(orderResult);
+  if (grounded) return grounded;
+  const cartMutated = JSON.stringify(cart) !== JSON.stringify(startingCart);
+  return cartMutated ? describeCartState(cart) : finalText;
+}
+
 type AsUserAssistant = ChatMessage & { role: "user" | "assistant" };
 const isUserOrAssistant = (m: ChatMessage): m is AsUserAssistant => m.role === "user" || m.role === "assistant";
 const isTerminalTool = (name: string) => name === "present_recommendations" || name === "place_order";
+
+// A model that answers a clear action request with plain text and zero tool
+// calls is exactly the failure mode that slips past finalizeReply (nothing
+// changed, so there's no grounded state to fall back to) — it just invents a
+// confirmation. This is a coarse heuristic (only used to decide whether a
+// no-tool-call response is worth retrying on a different model), not a
+// substitute for the LLM's own judgment elsewhere.
+const ACTION_INTENT_RE = /\b(add|remove|delete|order|buy|purchase|checkout|place it|place the order|do it|go ahead|yes|confirm(ed)?)\b/i;
+function expectsToolAction(lastUserText: string): boolean {
+  return ACTION_INTENT_RE.test(lastUserText);
+}
 
 interface ToolRunResult {
   result: unknown;
@@ -157,7 +180,7 @@ async function runAnthropic(
     if (terminalCall) break;
   }
 
-  finalText = describeOrderResult(orderResult) ?? finalText;
+  finalText = finalizeReply(finalText, cart, context.cart, orderResult);
   return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "claude" as const, cart, orderResult };
 }
 
@@ -221,7 +244,7 @@ async function runGemini(
     if (terminalCall) break;
   }
 
-  finalText = describeOrderResult(orderResult) ?? finalText;
+  finalText = finalizeReply(finalText, cart, context.cart, orderResult);
   return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "gemini" as const, cart, orderResult };
 }
 
@@ -231,16 +254,20 @@ async function runGemini(
 // list is a known-good baseline (curated for tool-calling support); it's
 // merged with a live, cached fetch of whatever's currently free on
 // OpenRouter so newly added free models get picked up automatically.
+// Ordered by expected reliability at multi-turn tool calling, not just raw
+// capability — larger/more established models first, small MoE ("A4B"-style
+// active-param) and preview models last, since those have been observed
+// narrating cart actions ("Done, removed it!") without ever calling the tool.
 const OPENROUTER_STATIC_MODELS = [
-  "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it:free",
   "z-ai/glm-5.2:free",
   "minimax/minimax-m3:free",
-  "minimax/minimax-m2.7:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "minimax/minimax-m2.7:free",
   "nvidia/nemotron-3.5-lightning:free",
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  "google/gemma-4-31b-it:free",
+  "google/gemma-4-26b-a4b-it:free",
   "inclusionai/ling-3.0-flash-fin:free",
   "dots-studio/dots-3-note-preview:free",
   "liquid/lfm-2.5-2.6b:free",
@@ -349,19 +376,45 @@ async function runOpenRouter(
   const models = await getOpenRouterModelCandidates(apiKey);
   let modelIndex = 0;
 
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+  const actionExpected = expectsToolAction(lastUserMessage);
+  // True only if every candidate model responded to an action request
+  // without ever calling a tool — in that case we still need *a* response
+  // object to read a request-id etc. from, but its text must never reach
+  // the user (see the honest-refusal override after the loop).
+  let untrustedActionResponse = false;
+
   for (let turn = 0; turn < 6; turn++) {
     orMessages[0] = { role: "system", content: buildSystemPrompt({ ...context, cart }) };
 
     let data: OpenRouterResponse | null = null;
+    let lastHttpSuccess: OpenRouterResponse | null = null;
     let lastErr: unknown = null;
     for (; modelIndex < models.length; modelIndex++) {
       try {
-        data = await callOpenRouter(apiKey, models[modelIndex], orMessages);
+        const candidate = await callOpenRouter(apiKey, models[modelIndex], orMessages);
+        lastHttpSuccess = candidate;
+        // On the very first turn of an action request, a response with zero
+        // tool calls is untrustworthy — the model is likely narrating an
+        // action it never performed. Treat it like a failure and try the
+        // next model instead of accepting fabricated text.
+        if (turn === 0 && actionExpected && (candidate.choices?.[0]?.message?.tool_calls ?? []).length === 0) {
+          console.error(`[ai/chat] openrouter model ${models[modelIndex]} answered an action request with no tool calls, trying next model`);
+          continue;
+        }
+        data = candidate;
         break;
       } catch (err) {
         lastErr = err;
         console.error(`[ai/chat] openrouter model ${models[modelIndex]} failed, trying next:`, err);
       }
+    }
+    if (!data && lastHttpSuccess) {
+      // Every model responded but none actually called a tool for this
+      // action — don't trust any of their text.
+      console.error("[ai/chat] no OpenRouter model used a tool for this action request; refusing to trust any of their text");
+      data = lastHttpSuccess;
+      untrustedActionResponse = true;
     }
     if (!data) throw lastErr ?? new Error("All OpenRouter models failed");
 
@@ -396,7 +449,9 @@ async function runOpenRouter(
     if (terminalCall) break;
   }
 
-  finalText = describeOrderResult(orderResult) ?? finalText;
+  finalText = untrustedActionResponse
+    ? "Sorry, I couldn't complete that just now — could you try again?"
+    : finalizeReply(finalText, cart, context.cart, orderResult);
   return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "openrouter" as const, cart, orderResult };
 }
 

@@ -180,6 +180,21 @@ export function executeRemoveFromCart(cart: CartItem[], input: { item_id: string
   return { cart: next, summary: cartSummary(next) };
 }
 
+// Small/free models sometimes narrate a cart change ("Done, removed the
+// Farmhouse!") without the underlying tool call actually landing (wrong
+// item_id, no call made at all, etc.) — the client always renders the real
+// `cart` array so nothing is ever financially wrong, but the spoken/typed
+// reply can lie about it. Whenever a cart-mutating tool actually ran this
+// turn, the caller replaces the model's text with this grounded summary
+// instead of trusting its narration.
+export function describeCartState(cart: CartItem[]): string {
+  const summary = cartSummary(cart);
+  if (summary.length === 0) return "Your cart is empty now.";
+  const lines = summary.map((i) => `${i.qty > 1 ? `${i.qty}x ` : ""}${i.title} (${i.provider})`).join(", ");
+  const total = summary.reduce((sum, i) => sum + i.price * i.qty, 0);
+  return `Your cart now has: ${lines} — total ₹${total.toLocaleString("en-IN")}. Want me to place the order?`;
+}
+
 export function executePlaceOrder(cart: CartItem[], walletBalance: number) {
   const summary = cartSummary(cart);
   if (summary.length === 0) return { ok: false as const, reason: "empty_cart" as const };
