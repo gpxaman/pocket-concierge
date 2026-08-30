@@ -227,14 +227,70 @@ async function runGemini(
 
 // OpenRouter free-tier models come and go and get rate-limited fast — don't
 // pin to one. Tried in order per turn; on failure (rate limit, model
-// temporarily down, etc.) we just move to the next candidate.
-const OPENROUTER_MODELS = [
+// temporarily down, etc.) we just move to the next candidate. This static
+// list is a known-good baseline (curated for tool-calling support); it's
+// merged with a live, cached fetch of whatever's currently free on
+// OpenRouter so newly added free models get picked up automatically.
+const OPENROUTER_STATIC_MODELS = [
   "google/gemma-4-26b-a4b-it:free",
   "google/gemma-4-31b-it:free",
   "z-ai/glm-5.2:free",
   "minimax/minimax-m3:free",
+  "minimax/minimax-m2.7:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  "inclusionai/ling-3.0-flash-fin:free",
+  "dots-studio/dots-3-note-preview:free",
+  "liquid/lfm-2.5-2.6b:free",
+  "thinkingmachines/inkling:free",
+  "thinkingmachines/inkling-small:free",
+  "poolside/laguna-s-2.1:free",
+  "poolside/laguna-xs-2.1:free",
+  "cohere/north-mini-code:free",
+  "openrouter/free", // OpenRouter's own free-model auto-router — last resort catch-all
 ];
+
+interface OpenRouterModelListing {
+  id: string;
+  pricing?: { prompt?: string; completion?: string };
+  supported_parameters?: string[];
+}
+
+let modelListCache: { models: string[]; fetchedAt: number } | null = null;
+const MODEL_LIST_TTL_MS = 20 * 60 * 1000;
+
+async function getOpenRouterModelCandidates(apiKey: string): Promise<string[]> {
+  const now = Date.now();
+  if (modelListCache && now - modelListCache.fetchedAt < MODEL_LIST_TTL_MS) {
+    return modelListCache.models;
+  }
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) throw new Error(`models list ${res.status}`);
+    const data = (await res.json()) as { data?: OpenRouterModelListing[] };
+    const free = (data.data ?? [])
+      .filter(
+        (m) =>
+          m.pricing &&
+          parseFloat(m.pricing.prompt ?? "1") === 0 &&
+          parseFloat(m.pricing.completion ?? "1") === 0 &&
+          (m.supported_parameters ?? []).includes("tools")
+      )
+      .map((m) => m.id);
+    // Curated list first (known-quality, proven to work), then any other
+    // currently-free tool-capable model we discovered, for extra redundancy.
+    const merged = [...OPENROUTER_STATIC_MODELS, ...free.filter((id) => !OPENROUTER_STATIC_MODELS.includes(id))];
+    modelListCache = { models: merged, fetchedAt: now };
+    return merged;
+  } catch (err) {
+    console.error("[ai/chat] couldn't refresh OpenRouter free-model list, using static list:", err);
+    return OPENROUTER_STATIC_MODELS;
+  }
+}
 
 const OPENAI_TOOLS = AI_TOOLS.map((t) => ({
   type: "function" as const,
@@ -290,6 +346,7 @@ async function runOpenRouter(
     ...messages.filter(isUserOrAssistant).map((m) => ({ role: m.role, content: m.content })),
   ];
 
+  const models = await getOpenRouterModelCandidates(apiKey);
   let modelIndex = 0;
 
   for (let turn = 0; turn < 6; turn++) {
@@ -297,13 +354,13 @@ async function runOpenRouter(
 
     let data: OpenRouterResponse | null = null;
     let lastErr: unknown = null;
-    for (; modelIndex < OPENROUTER_MODELS.length; modelIndex++) {
+    for (; modelIndex < models.length; modelIndex++) {
       try {
-        data = await callOpenRouter(apiKey, OPENROUTER_MODELS[modelIndex], orMessages);
+        data = await callOpenRouter(apiKey, models[modelIndex], orMessages);
         break;
       } catch (err) {
         lastErr = err;
-        console.error(`[ai/chat] openrouter model ${OPENROUTER_MODELS[modelIndex]} failed, trying next:`, err);
+        console.error(`[ai/chat] openrouter model ${models[modelIndex]} failed, trying next:`, err);
       }
     }
     if (!data) throw lastErr ?? new Error("All OpenRouter models failed");
@@ -359,13 +416,28 @@ export async function POST(req: NextRequest) {
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;
 
-  try {
-    // Gemini first — that's the provider being tested right now.
-    if (geminiKey) return NextResponse.json(await runGemini(messages, geminiKey, normalizedContext));
-    if (anthropicKey) return NextResponse.json(await runAnthropic(messages, anthropicKey, normalizedContext));
-    if (openrouterKey) return NextResponse.json(await runOpenRouter(messages, openrouterKey, normalizedContext));
-  } catch (err) {
-    console.error("[ai/chat] provider call failed, falling back:", err);
+  // Each configured provider gets its own try: a failure (quota exhausted,
+  // outage, bad key) falls through to the next one immediately rather than
+  // jumping straight to the zero-config demo fallback. Order is a rough
+  // quality ranking — first provider with a usable response wins.
+  type ProviderResult = {
+    reply: string;
+    itemIds: string[];
+    mode: string;
+    cart: CartItem[];
+    orderResult: ReturnType<typeof executePlaceOrder> | null;
+  };
+  const attempts: { name: string; run: () => Promise<ProviderResult> }[] = [];
+  if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext) });
+  if (anthropicKey) attempts.push({ name: "Anthropic", run: () => runAnthropic(messages, anthropicKey, normalizedContext) });
+  if (openrouterKey) attempts.push({ name: "OpenRouter", run: () => runOpenRouter(messages, openrouterKey, normalizedContext) });
+
+  for (const attempt of attempts) {
+    try {
+      return NextResponse.json(await attempt.run());
+    } catch (err) {
+      console.error(`[ai/chat] ${attempt.name} failed, trying next provider:`, err);
+    }
   }
 
   const fallback = runFallbackAgent(messages);

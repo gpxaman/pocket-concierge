@@ -72,19 +72,19 @@ function OrbButton({
           <span key={i} className="voice-ring absolute inset-0 rounded-full" style={{ animationDelay: `${i * 0.6}s` }} />
         ))}
       <motion.button
-        layoutId="concierge-orb"
         onClick={onTap}
         className={clsx(
           "relative flex items-center justify-center rounded-full bg-gradient-to-br from-accent via-[#ffe27a] to-[#c98f00]",
           big ? "h-32 w-32 shadow-[0_0_60px_rgba(245,197,24,0.35)]" : "h-11 w-11 shadow-[0_0_20px_rgba(245,197,24,0.3)]",
           phase === "idle" && "voice-orb-idle"
         )}
+        initial={{ scale: 0.6, opacity: 0 }}
         animate={
           phase === "listening"
-            ? { scale: [1, 1.07, 1] }
+            ? { scale: [1, 1.07, 1], opacity: 1 }
             : phase === "speaking"
-              ? { scale: [1, 1.1, 0.98, 1.06, 1] }
-              : { scale: 1 }
+              ? { scale: [1, 1.1, 0.98, 1.06, 1], opacity: 1 }
+              : { scale: 1, opacity: 1 }
         }
         transition={{
           repeat: phase === "listening" || phase === "speaking" ? Infinity : 0,
@@ -425,7 +425,9 @@ export default function HomeAgent() {
                     {renderInline(m.content)}
                   </div>
                   {m.role === "assistant" && m.mode === "fallback" && (
-                    <p className="px-1 text-[10px] text-white/30">Demo mode — no GEMINI_API_KEY / ANTHROPIC_API_KEY set.</p>
+                    <p className="px-1 text-[10px] text-white/30">
+                      Demo mode — no AI provider reachable right now (check your API keys / provider quota).
+                    </p>
                   )}
                   {m.itemIds && m.itemIds.length > 0 && (
                     <div className="space-y-2">

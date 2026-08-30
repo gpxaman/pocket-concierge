@@ -61,7 +61,7 @@ export function runFallbackAgent(messages: ChatMessage[]): FallbackResult {
     .join("\n");
 
   return {
-    reply: `Here's what I'd point you to${budgetNote}, best fit first:\n\n${reasonBits}\n\nSet GEMINI_API_KEY or ANTHROPIC_API_KEY for the full reasoning concierge — this is the zero-config demo mode.`,
+    reply: `Here's what I'd point you to${budgetNote}, best fit first:\n\n${reasonBits}\n\nNo AI provider is reachable right now (check your API keys / provider quota) — this is the zero-config demo mode.`,
     itemIds: top.map((c) => c.id),
   };
 }
