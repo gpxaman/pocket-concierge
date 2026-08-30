@@ -124,6 +124,40 @@ wss.on("connection", (ws) => {
       }
       return;
     }
+
+    // Call signaling (WebRTC offer/answer/ICE trickle + hangup): pure
+    // passthrough, live-only — never queued, since a call only makes sense
+    // if the other side is connected right now. The relay never touches
+    // media; SDP/ICE just describe how to set up a direct (or STUN-assisted)
+    // peer connection, and the actual audio/video is DTLS-SRTP encrypted
+    // end-to-end between the two browsers once connected.
+    if (msg.type === "call-offer" && selfId && msg.to && msg.sdp && msg.kind) {
+      const target = clients.get(msg.to);
+      if (target && target.readyState === target.OPEN) {
+        send(target, { type: "call-offer", from: selfId, kind: msg.kind, sdp: msg.sdp });
+      } else {
+        send(ws, { type: "call-unavailable", to: msg.to });
+      }
+      return;
+    }
+
+    if (msg.type === "call-answer" && selfId && msg.to && msg.sdp) {
+      const target = clients.get(msg.to);
+      if (target && target.readyState === target.OPEN) send(target, { type: "call-answer", from: selfId, sdp: msg.sdp });
+      return;
+    }
+
+    if (msg.type === "call-ice" && selfId && msg.to && msg.candidate) {
+      const target = clients.get(msg.to);
+      if (target && target.readyState === target.OPEN) send(target, { type: "call-ice", from: selfId, candidate: msg.candidate });
+      return;
+    }
+
+    if (msg.type === "call-end" && selfId && msg.to) {
+      const target = clients.get(msg.to);
+      if (target && target.readyState === target.OPEN) send(target, { type: "call-end", from: selfId });
+      return;
+    }
   });
 
   ws.on("close", () => {

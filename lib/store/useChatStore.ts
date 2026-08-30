@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { decryptMessage, deriveSharedKey, encryptMessage, generateIdentityKeyPair, USERNAME_PATTERN } from "@/lib/chat/crypto";
+import { AUDIO_CONSTRAINTS, VIDEO_CONSTRAINTS, applyHighQualityEncoding, createPeerConnection } from "@/lib/chat/webrtc";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
@@ -36,6 +37,18 @@ export type UsernameStatus = "unset" | "checking" | "set" | "taken" | "invalid";
 type ClaimResult = { ok: true } | { ok: false; reason: "invalid" | "taken" | "offline" };
 type AddContactResult = { ok: true; contact: ChatContact } | { ok: false; reason: "invalid" | "not_found" | "self" | "offline" };
 
+export type CallKind = "audio" | "video";
+export type CallPhase = "outgoing" | "incoming" | "connecting" | "active";
+
+export interface CallState {
+  contactId: string;
+  kind: CallKind;
+  phase: CallPhase;
+  startedAt: number | null;
+  muted: boolean;
+  cameraOff: boolean;
+}
+
 interface ChatState {
   identity: ChatIdentity | null;
   usernameStatus: UsernameStatus;
@@ -43,6 +56,8 @@ interface ChatState {
   messagesByContact: Record<string, ChatMessageE2E[]>;
   unreadByContact: Record<string, number>;
   connectionStatus: "connecting" | "online" | "offline";
+  call: CallState | null;
+  callEndedReason: string | null;
 
   ensureIdentity: () => Promise<ChatIdentity>;
   claimUsername: (username: string) => Promise<ClaimResult>;
@@ -52,16 +67,49 @@ interface ChatState {
   markRead: (contactId: string) => void;
   connect: () => void;
   disconnect: () => void;
+
+  startCall: (contactId: string, kind: CallKind) => Promise<void>;
+  acceptCall: () => Promise<void>;
+  rejectCall: () => void;
+  endCall: () => void;
+  toggleMute: () => void;
+  toggleCamera: () => void;
+  clearCallEndedReason: () => void;
 }
 
-// WebSocket, reconnect timer, pending request resolvers and the derived-key
-// cache all live outside the store: none of them are serializable, so none
-// of them belong in persisted state.
+// WebSocket, reconnect timer, pending request resolvers, the derived-key
+// cache, and everything WebRTC (peer connection, media streams, buffered
+// ICE) all live outside the store: none of it is serializable, so none of
+// it belongs in persisted state.
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const sharedKeyCache = new Map<string, CryptoKey>();
 let pendingUsernameClaim: { resolve: (r: ClaimResult) => void } | null = null;
 const pendingLookups = new Map<string, { resolve: (r: { found: boolean; id?: string; username?: string; publicKeyJwk?: JsonWebKey }) => void }>();
+
+let peerConnection: RTCPeerConnection | null = null;
+let localStream: MediaStream | null = null;
+let remoteStream: MediaStream | null = null;
+let pendingOfferSdp: RTCSessionDescriptionInit | null = null;
+let pendingRemoteIce: RTCIceCandidateInit[] = [];
+const callMediaListeners = new Set<() => void>();
+
+function notifyCallMedia() {
+  callMediaListeners.forEach((fn) => fn());
+}
+/** Subscribe to local/remote call media changes — used by CallOverlay to
+ * know when to (re)attach streams to <video>/<audio> elements, since
+ * MediaStream objects deliberately never enter zustand state. */
+export function subscribeCallMedia(fn: () => void): () => void {
+  callMediaListeners.add(fn);
+  return () => callMediaListeners.delete(fn);
+}
+export function getLocalCallStream(): MediaStream | null {
+  return localStream;
+}
+export function getRemoteCallStream(): MediaStream | null {
+  return remoteStream;
+}
 
 function relayUrl(): string {
   if (typeof window === "undefined") return "";
@@ -166,6 +214,52 @@ export const useChatStore = create<ChatState>()(
         }
       }
 
+      function sendSignal(msg: Record<string, unknown>) {
+        if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+      }
+
+      function teardownCallResources() {
+        localStream?.getTracks().forEach((t) => t.stop());
+        localStream = null;
+        remoteStream = null;
+        peerConnection?.close();
+        peerConnection = null;
+        pendingOfferSdp = null;
+        pendingRemoteIce = [];
+        notifyCallMedia();
+      }
+
+      /** Local hangup: notifies the peer (if we have one to notify) and
+       * clears everything. Used for end/reject/cancel and connection-drop. */
+      function endCallLocally(notifyPeer: boolean) {
+        const call = get().call;
+        if (notifyPeer && call) sendSignal({ type: "call-end", to: call.contactId });
+        teardownCallResources();
+        set({ call: null });
+      }
+
+      function wirePeerConnection(pc: RTCPeerConnection, contactId: string) {
+        pc.onicecandidate = (e) => {
+          if (e.candidate) sendSignal({ type: "call-ice", to: contactId, candidate: e.candidate.toJSON() });
+        };
+        pc.ontrack = (e) => {
+          if (!remoteStream) remoteStream = new MediaStream();
+          remoteStream.addTrack(e.track);
+          notifyCallMedia();
+        };
+        pc.onconnectionstatechange = () => {
+          if (pc !== peerConnection) return;
+          if (pc.connectionState === "connected") {
+            set((s) => (s.call ? { call: { ...s.call, phase: "active", startedAt: s.call.startedAt ?? Date.now() } } : {}));
+          } else if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+            endCallLocally(false);
+          } else if (pc.connectionState === "disconnected") {
+            // Transient — WebRTC often recovers on its own; only tear down
+            // once it settles into failed/closed.
+          }
+        };
+      }
+
       return {
         identity: null,
         usernameStatus: "unset",
@@ -173,6 +267,8 @@ export const useChatStore = create<ChatState>()(
         messagesByContact: {},
         unreadByContact: {},
         connectionStatus: "offline",
+        call: null,
+        callEndedReason: null,
 
         ensureIdentity: async () => {
           const existing = get().identity;
@@ -313,6 +409,44 @@ export const useChatStore = create<ChatState>()(
                   ? { found: true, id: msg.id as string, username: msg.username as string, publicKeyJwk: msg.publicKeyJwk as JsonWebKey }
                   : { found: false }
               );
+            } else if (msg.type === "call-offer") {
+              const from = msg.from as string;
+              const existingCall = get().call;
+              if (existingCall) {
+                // Already on/starting a call — busy. Auto-decline so the
+                // caller isn't left hanging (no call-waiting in this scope).
+                sendSignal({ type: "call-end", to: from });
+                return;
+              }
+              pendingOfferSdp = msg.sdp as RTCSessionDescriptionInit;
+              pendingRemoteIce = [];
+              set({
+                call: { contactId: from, kind: msg.kind as CallKind, phase: "incoming", startedAt: null, muted: false, cameraOff: false },
+              });
+            } else if (msg.type === "call-answer") {
+              const call = get().call;
+              if (!call || call.contactId !== (msg.from as string) || !peerConnection) return;
+              void peerConnection.setRemoteDescription(msg.sdp as RTCSessionDescriptionInit).then(async () => {
+                for (const c of pendingRemoteIce) await peerConnection?.addIceCandidate(c).catch(() => {});
+                pendingRemoteIce = [];
+                set((s) => (s.call ? { call: { ...s.call, phase: "connecting" } } : {}));
+              });
+            } else if (msg.type === "call-ice") {
+              const call = get().call;
+              if (!call || call.contactId !== (msg.from as string)) return;
+              const candidate = msg.candidate as RTCIceCandidateInit;
+              if (peerConnection?.remoteDescription) void peerConnection.addIceCandidate(candidate).catch(() => {});
+              else pendingRemoteIce.push(candidate);
+            } else if (msg.type === "call-end") {
+              const call = get().call;
+              if (!call || call.contactId !== (msg.from as string)) return;
+              teardownCallResources();
+              set({ call: null, callEndedReason: "Call ended" });
+            } else if (msg.type === "call-unavailable") {
+              const call = get().call;
+              if (!call || call.contactId !== (msg.to as string)) return;
+              teardownCallResources();
+              set({ call: null, callEndedReason: "They're not online right now" });
             }
           };
           ws.onclose = () => {
@@ -333,8 +467,99 @@ export const useChatStore = create<ChatState>()(
           socket = null;
           set({ connectionStatus: "offline" });
         },
+
+        startCall: async (contactId, kind) => {
+          if (get().call) return;
+          const contact = get().contacts.find((c) => c.id === contactId);
+          if (!contact || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+          set({ call: { contactId, kind, phase: "outgoing", startedAt: null, muted: false, cameraOff: false }, callEndedReason: null });
+
+          try {
+            localStream = await navigator.mediaDevices.getUserMedia({
+              video: kind === "video" ? VIDEO_CONSTRAINTS : false,
+              audio: AUDIO_CONSTRAINTS,
+            });
+            notifyCallMedia();
+
+            const pc = createPeerConnection();
+            peerConnection = pc;
+            wirePeerConnection(pc, contactId);
+            localStream.getTracks().forEach((t) => pc.addTrack(t, localStream!));
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            await applyHighQualityEncoding(pc);
+            sendSignal({ type: "call-offer", to: contactId, kind, sdp: pc.localDescription });
+          } catch (err) {
+            console.warn("[call] failed to start", err);
+            teardownCallResources();
+            set({ call: null, callEndedReason: "Couldn't access camera/microphone" });
+          }
+        },
+
+        acceptCall: async () => {
+          const call = get().call;
+          if (!call || call.phase !== "incoming" || !pendingOfferSdp) return;
+
+          try {
+            localStream = await navigator.mediaDevices.getUserMedia({
+              video: call.kind === "video" ? VIDEO_CONSTRAINTS : false,
+              audio: AUDIO_CONSTRAINTS,
+            });
+            notifyCallMedia();
+
+            const pc = createPeerConnection();
+            peerConnection = pc;
+            wirePeerConnection(pc, call.contactId);
+            localStream.getTracks().forEach((t) => pc.addTrack(t, localStream!));
+
+            await pc.setRemoteDescription(pendingOfferSdp);
+            for (const c of pendingRemoteIce) await pc.addIceCandidate(c).catch(() => {});
+            pendingRemoteIce = [];
+
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await applyHighQualityEncoding(pc);
+            sendSignal({ type: "call-answer", to: call.contactId, sdp: pc.localDescription });
+
+            set((s) => (s.call ? { call: { ...s.call, phase: "connecting" } } : {}));
+          } catch (err) {
+            console.warn("[call] failed to accept", err);
+            endCallLocally(true);
+            set({ callEndedReason: "Couldn't access camera/microphone" });
+          }
+        },
+
+        rejectCall: () => endCallLocally(true),
+        endCall: () => endCallLocally(true),
+
+        toggleMute: () => {
+          const track = localStream?.getAudioTracks()[0];
+          if (!track) return;
+          track.enabled = !track.enabled;
+          set((s) => (s.call ? { call: { ...s.call, muted: !track.enabled } } : {}));
+        },
+
+        toggleCamera: () => {
+          const track = localStream?.getVideoTracks()[0];
+          if (!track) return;
+          track.enabled = !track.enabled;
+          set((s) => (s.call ? { call: { ...s.call, cameraOff: !track.enabled } } : {}));
+        },
+
+        clearCallEndedReason: () => set({ callEndedReason: null }),
       };
     },
-    { name: "pocket-concierge-chat", version: 2 }
+    {
+      name: "pocket-concierge-chat",
+      version: 3,
+      partialize: (s) => ({
+        identity: s.identity,
+        contacts: s.contacts,
+        messagesByContact: s.messagesByContact,
+        unreadByContact: s.unreadByContact,
+      }),
+    }
   )
 );

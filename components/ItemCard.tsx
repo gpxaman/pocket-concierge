@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { CatalogItem, Transaction } from "@/lib/types";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { useState } from "react";
-import { Star, Clock, MapPin, Check } from "lucide-react";
+import { Star, Clock, MapPin, Check, ArrowRight } from "lucide-react";
 import { CATEGORY_ICON } from "@/lib/data/categoryIcons";
 
 function txTypeFor(category: CatalogItem["category"]): Transaction["type"] {
@@ -12,11 +13,21 @@ function txTypeFor(category: CatalogItem["category"]): Transaction["type"] {
   return "ORDER";
 }
 
+// Rides and food have their own real booking/checkout flow with live
+// tracking (app/explore/rides, app/explore/food) — a plain "draft" here
+// would just be an orphaned Transaction the user has to go hunt down in
+// Activity to pay for. Hand off to the real flow instead.
+const CHECKOUT_ROUTE: Partial<Record<CatalogItem["category"], string>> = {
+  rides: "/explore/rides",
+  food: "/explore/food",
+};
+
 export default function ItemCard({ item, compact = false }: { item: CatalogItem; compact?: boolean }) {
   const createDraft = useAppStore((s) => s.createDraft);
   const [added, setAdded] = useState(false);
 
-  const actionLabel = item.category === "hotels" ? "Draft booking" : item.category === "rides" ? "Draft ride" : "Add to draft";
+  const checkoutRoute = CHECKOUT_ROUTE[item.category];
+  const actionLabel = item.category === "hotels" ? "Draft booking" : "Add to draft";
   const Icon = CATEGORY_ICON[item.category];
 
   return (
@@ -52,22 +63,31 @@ export default function ItemCard({ item, compact = false }: { item: CatalogItem;
         </div>
 
         {!compact && (
-          <button
-            onClick={() => {
-              createDraft(item, txTypeFor(item.category));
-              setAdded(true);
-              setTimeout(() => setAdded(false), 1800);
-            }}
-            className="mt-2 inline-flex items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-xs font-semibold text-ink transition hover:brightness-95"
-          >
-            {added ? (
-              <>
-                <Check size={13} /> Added — no charge yet
-              </>
-            ) : (
-              actionLabel
-            )}
-          </button>
+          checkoutRoute ? (
+            <Link
+              href={checkoutRoute}
+              className="mt-2 inline-flex items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-xs font-semibold text-ink transition hover:brightness-95"
+            >
+              {item.category === "rides" ? "Book a ride" : "Order food"} <ArrowRight size={13} />
+            </Link>
+          ) : (
+            <button
+              onClick={() => {
+                createDraft(item, txTypeFor(item.category));
+                setAdded(true);
+                setTimeout(() => setAdded(false), 1800);
+              }}
+              className="mt-2 inline-flex items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-xs font-semibold text-ink transition hover:brightness-95"
+            >
+              {added ? (
+                <>
+                  <Check size={13} /> Added — no charge yet
+                </>
+              ) : (
+                actionLabel
+              )}
+            </button>
+          )
         )}
       </div>
     </div>

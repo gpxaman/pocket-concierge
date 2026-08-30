@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
-import ChatFab from "@/components/ChatFab";
+import CallOverlay from "@/components/CallOverlay";
 
 export const metadata: Metadata = {
   title: "Pocket Concierge",
@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {children}
         </div>
         <BottomNav />
-        <ChatFab />
+        <CallOverlay />
       </body>
     </html>
   );

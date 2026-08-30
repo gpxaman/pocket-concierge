@@ -98,3 +98,87 @@ export interface ChatMessage {
   mode?: "claude" | "gemini" | "fallback";
   createdAt: number;
 }
+
+// --- Snap (camera + filters) + creator registration ---
+
+export interface FilterSettings {
+  brightness: number; // 100 = unchanged
+  contrast: number;
+  saturation: number;
+  hueRotate: number; // degrees, -180..180
+  sepia: number; // 0-100
+  grayscale: number; // 0-100
+}
+
+export interface CreatorFilter extends FilterSettings {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface CreatorProfile {
+  handle: string;
+  category: string;
+  bio: string;
+  registeredAt: number;
+}
+
+export interface Snap {
+  id: string;
+  dataUrl: string;
+  filterName: string;
+  createdAt: number;
+}
+
+// --- Rides (cab booking) + food delivery: shared live-tracking domain ---
+
+export type RidePhase = "searching" | "assigned" | "arrived" | "in_progress" | "completed" | "cancelled";
+
+export interface RideDriver {
+  name: string;
+  vehicle: string;
+  plate: string;
+  rating: number;
+}
+
+export interface ActiveRide {
+  id: string;
+  transactionId: string;
+  phase: RidePhase;
+  tierName: string;
+  pickup: string;
+  destination: string;
+  distanceKm: number;
+  fare: number;
+  driver: RideDriver | null;
+  etaMinutes: number | null;
+  requestedAt: number;
+  arrivedAt: number | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  driverRating: number | null;
+}
+
+export type FoodOrderPhase = "placed" | "preparing" | "assigned" | "picked_up" | "delivered" | "cancelled";
+
+export interface DeliveryPartner {
+  name: string;
+  vehicle: string;
+  rating: number;
+}
+
+export interface ActiveFoodOrder {
+  id: string;
+  transactionId: string;
+  phase: FoodOrderPhase;
+  itemTitle: string;
+  restaurantName: string;
+  address: string;
+  fare: number;
+  partner: DeliveryPartner | null;
+  etaMinutes: number | null;
+  placedAt: number;
+  pickedUpAt: number | null;
+  deliveredAt: number | null;
+  partnerRating: number | null;
+}

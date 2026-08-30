@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ChatMessageE2E, useChatStore } from "@/lib/store/useChatStore";
-import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock } from "lucide-react";
+import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock, Phone, Video } from "lucide-react";
 import clsx from "clsx";
 
 // Stable reference: `?? []` inline in a selector would allocate a new array
@@ -24,6 +24,8 @@ export default function ConversationPage() {
   const connect = useChatStore((s) => s.connect);
   const markRead = useChatStore((s) => s.markRead);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const call = useChatStore((s) => s.call);
+  const startCall = useChatStore((s) => s.startCall);
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -72,6 +74,22 @@ export default function ConversationPage() {
             <Lock size={9} /> End-to-end encrypted · {connectionStatus}
           </p>
         </div>
+        <button
+          onClick={() => startCall(contactId, "audio")}
+          disabled={!!call || connectionStatus !== "online"}
+          className="flex h-9 w-9 items-center justify-center rounded-full text-ink/50 hover:bg-accentSoft hover:text-accentDark disabled:opacity-30"
+          title="Voice call"
+        >
+          <Phone size={17} />
+        </button>
+        <button
+          onClick={() => startCall(contactId, "video")}
+          disabled={!!call || connectionStatus !== "online"}
+          className="flex h-9 w-9 items-center justify-center rounded-full text-ink/50 hover:bg-accentSoft hover:text-accentDark disabled:opacity-30"
+          title="Video call"
+        >
+          <Video size={17} />
+        </button>
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-2 overflow-y-auto px-5 py-4">

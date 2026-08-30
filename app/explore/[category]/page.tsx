@@ -6,8 +6,13 @@ import { CATEGORY_META } from "@/lib/data/categories";
 import { CATEGORY_ICON } from "@/lib/data/categoryIcons";
 import ItemCard from "@/components/ItemCard";
 
+const DEDICATED_CATEGORIES = new Set(["rides", "food"]);
+
 export function generateStaticParams() {
-  return CATEGORY_META.map((c) => ({ category: c.id }));
+  // "rides" and "food" have their own dedicated booking/ordering flows —
+  // those static routes always win the match, so pre-rendering this
+  // generic one for them too would just be a dead, unreachable page.
+  return CATEGORY_META.filter((c) => !DEDICATED_CATEGORIES.has(c.id)).map((c) => ({ category: c.id }));
 }
 
 export default async function CategoryPage({ params }: { params: Promise<{ category: string }> }) {

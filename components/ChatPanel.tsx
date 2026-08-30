@@ -8,7 +8,7 @@ import { findById } from "@/lib/data/catalog";
 import { CATEGORY_ICON } from "@/lib/data/categoryIcons";
 import ItemCard from "@/components/ItemCard";
 import VoiceOverlay from "@/components/VoiceOverlay";
-import { Mic, Image as ImageIcon, Send, Sparkles } from "lucide-react";
+import { Mic, Send, Sparkles } from "lucide-react";
 import clsx from "clsx";
 
 const QUICK_ACTIONS: { category: ServiceCategory; label: string; prompt: string }[] = [
@@ -148,7 +148,7 @@ export default function ChatPanel() {
           transition={{ duration: 0.5, delay: 0.2 }}
           className="relative mt-1.5 max-w-[90%] text-sm text-white/50"
         >
-          Text, talk, describe an image, or tap something below — I'll ask only what I actually need to know.
+          Text, talk, or tap something below — I'll ask only what I actually need to know.
         </motion.p>
       </div>
 
@@ -250,9 +250,6 @@ export default function ChatPanel() {
           title="Talk to the concierge"
         >
           <Mic size={18} />
-        </button>
-        <button type="button" className="text-ink/35 hover:text-accentDark" title="Image (demo placeholder)">
-          <ImageIcon size={18} />
         </button>
         <input
           value={input}
