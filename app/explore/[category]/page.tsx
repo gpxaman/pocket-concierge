@@ -11,7 +11,7 @@ import ItemCard from "@/components/ItemCard";
 // routes before this dynamic one for those exact paths, but they're
 // excluded here too so this page's own static generation doesn't
 // pre-render for them.
-const DEDICATED_CATEGORIES = new Set(["food", "grocery", "hotels"]);
+const DEDICATED_CATEGORIES = new Set(["food", "grocery", "hotels", "rides"]);
 
 export function generateStaticParams() {
   return CATEGORY_META.filter((c) => !DEDICATED_CATEGORIES.has(c.id)).map((c) => ({ category: c.id }));

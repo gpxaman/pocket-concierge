@@ -66,7 +66,9 @@ Conversation shape:
   right room actually gets booked. Never call book_hotel without a preview_hotel_booking call earlier in that
   same turn.
 - Keep replies tight: 1-4 sentences, spoken-voice style. Plain prose only — no markdown bullet/numbered lists
-  or headings (the client renders **bold** but nothing else literally).`;
+  or headings (the client renders **bold** but nothing else literally).
+- If the user attaches an image, actually look at it and respond to what's in it — describe it, answer
+  questions about it, or use it to help find/compare a real catalog item if that's what they're asking for.`;
 
 function buildSystemPrompt(context: RequestContext) {
   const cartLines = context.cart
@@ -187,12 +189,41 @@ function runToolByName(
   return { result: { error: `Unknown tool ${name}` }, cart };
 }
 
-async function runAnthropic(messages: ChatMessage[], apiKey: string, context: RequestContext) {
+interface PendingImageInput {
+  dataUrl: string;
+  mimeType: string;
+}
+
+/** Splits a "data:image/png;base64,AAAA..." URL into its mime type and raw base64 payload. */
+function extractBase64(dataUrl: string): { mimeType: string; data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
+}
+
+async function runAnthropic(messages: ChatMessage[], apiKey: string, context: RequestContext, image?: PendingImageInput) {
   const client = new Anthropic({ apiKey });
 
   const anthropicMessages: Anthropic.MessageParam[] = messages
     .filter(isUserOrAssistant)
     .map((m) => ({ role: m.role, content: m.content }));
+
+  // Only the current turn's image is attached, not replayed into every
+  // history entry — keeps request payloads sane on later turns.
+  if (image) {
+    const parsed = extractBase64(image.dataUrl);
+    const lastIdx = anthropicMessages.length - 1;
+    if (parsed && lastIdx >= 0 && anthropicMessages[lastIdx].role === "user") {
+      const text = anthropicMessages[lastIdx].content as string;
+      anthropicMessages[lastIdx] = {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: parsed.mimeType as "image/png", data: parsed.data } },
+          { type: "text", text },
+        ],
+      };
+    }
+  }
 
   let recommendedIds: string[] = [];
   let finalText = "";
@@ -252,12 +283,24 @@ const GEMINI_TOOLS: FunctionDeclaration[] = AI_TOOLS.map((t) => ({
   parametersJsonSchema: t.input_schema,
 }));
 
-async function runGemini(messages: ChatMessage[], apiKey: string, context: RequestContext) {
+async function runGemini(messages: ChatMessage[], apiKey: string, context: RequestContext, image?: PendingImageInput) {
   const ai = new GoogleGenAI({ apiKey });
 
   const contents: GeminiContent[] = messages
     .filter(isUserOrAssistant)
     .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+
+  if (image) {
+    const parsed = extractBase64(image.dataUrl);
+    const lastIdx = contents.length - 1;
+    if (parsed && lastIdx >= 0 && contents[lastIdx].role === "user") {
+      const text = (contents[lastIdx].parts?.[0] as { text?: string } | undefined)?.text ?? "";
+      contents[lastIdx] = {
+        role: "user",
+        parts: [{ inlineData: { mimeType: parsed.mimeType, data: parsed.data } }, { text }],
+      };
+    }
+  }
 
   let recommendedIds: string[] = [];
   let finalText = "";
@@ -350,40 +393,50 @@ interface OpenRouterModelListing {
   id: string;
   pricing?: { prompt?: string; completion?: string };
   supported_parameters?: string[];
+  architecture?: { input_modalities?: string[] };
 }
 
-let modelListCache: { models: string[]; fetchedAt: number } | null = null;
+let modelListCache: { freeModels: OpenRouterModelListing[]; fetchedAt: number } | null = null;
 const MODEL_LIST_TTL_MS = 20 * 60 * 1000;
 
-async function getOpenRouterModelCandidates(apiKey: string): Promise<string[]> {
+async function getOpenRouterModelCandidates(apiKey: string, requireImage = false): Promise<string[]> {
   const now = Date.now();
+  let freeModels: OpenRouterModelListing[];
   if (modelListCache && now - modelListCache.fetchedAt < MODEL_LIST_TTL_MS) {
-    return modelListCache.models;
-  }
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) throw new Error(`models list ${res.status}`);
-    const data = (await res.json()) as { data?: OpenRouterModelListing[] };
-    const free = (data.data ?? [])
-      .filter(
+    freeModels = modelListCache.freeModels;
+  } else {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) throw new Error(`models list ${res.status}`);
+      const data = (await res.json()) as { data?: OpenRouterModelListing[] };
+      freeModels = (data.data ?? []).filter(
         (m) =>
           m.pricing &&
           parseFloat(m.pricing.prompt ?? "1") === 0 &&
           parseFloat(m.pricing.completion ?? "1") === 0 &&
           (m.supported_parameters ?? []).includes("tools")
-      )
-      .map((m) => m.id);
-    // Curated list first (known-quality, proven to work), then any other
-    // currently-free tool-capable model we discovered, for extra redundancy.
-    const merged = [...OPENROUTER_STATIC_MODELS, ...free.filter((id) => !OPENROUTER_STATIC_MODELS.includes(id))];
-    modelListCache = { models: merged, fetchedAt: now };
-    return merged;
-  } catch (err) {
-    console.error("[ai/chat] couldn't refresh OpenRouter free-model list, using static list:", err);
-    return OPENROUTER_STATIC_MODELS;
+      );
+      modelListCache = { freeModels, fetchedAt: now };
+    } catch (err) {
+      console.error("[ai/chat] couldn't refresh OpenRouter free-model list, using static list:", err);
+      freeModels = [];
+    }
   }
+
+  const freeIds = freeModels.map((m) => m.id);
+  // Curated list first (known-quality, proven to work), then any other
+  // currently-free tool-capable model discovered, for extra redundancy.
+  const merged = [...OPENROUTER_STATIC_MODELS, ...freeIds.filter((id) => !OPENROUTER_STATIC_MODELS.includes(id))];
+  if (!requireImage) return merged;
+
+  // With an image attached, put vision-capable free models first — the
+  // static list is text-only-curated, so this only reorders the discovered set.
+  const visionCapable = new Set(
+    freeModels.filter((m) => (m.architecture?.input_modalities ?? []).includes("image")).map((m) => m.id)
+  );
+  return [...merged.filter((id) => visionCapable.has(id)), ...merged.filter((id) => !visionCapable.has(id))];
 }
 
 const OPENAI_TOOLS = AI_TOOLS.map((t) => ({
@@ -396,9 +449,10 @@ interface OpenRouterToolCall {
   type: "function";
   function: { name: string; arguments: string };
 }
+type OpenRouterContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 interface OpenRouterMessage {
   role: string;
-  content: string | null;
+  content: string | null | OpenRouterContentPart[];
   tool_calls?: OpenRouterToolCall[];
   tool_call_id?: string;
 }
@@ -443,7 +497,7 @@ async function callOpenRouter(apiKey: string, model: string, messages: OpenRoute
   }
 }
 
-async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: RequestContext) {
+async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: RequestContext, image?: PendingImageInput) {
   let cart = context.cart;
   let recommendedIds: string[] = [];
   let finalText = "";
@@ -456,7 +510,23 @@ async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: R
     ...messages.filter(isUserOrAssistant).map((m) => ({ role: m.role, content: m.content })),
   ];
 
-  const models = await getOpenRouterModelCandidates(apiKey);
+  // OpenAI-format image content — unlike Anthropic/Gemini, image_url takes
+  // the data URL directly, no need to strip the base64 prefix.
+  if (image) {
+    const lastIdx = orMessages.length - 1;
+    if (lastIdx >= 0 && orMessages[lastIdx].role === "user") {
+      const text = orMessages[lastIdx].content as string;
+      orMessages[lastIdx] = {
+        role: "user",
+        content: [
+          { type: "text", text },
+          { type: "image_url", image_url: { url: image.dataUrl } },
+        ],
+      };
+    }
+  }
+
+  const models = await getOpenRouterModelCandidates(apiKey, Boolean(image));
   let modelIndex = 0;
 
   const lastUserMessage = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
@@ -543,9 +613,10 @@ async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: R
 }
 
 export async function POST(req: NextRequest) {
-  const { messages, context } = (await req.json()) as {
+  const { messages, context, image } = (await req.json()) as {
     messages: ChatMessage[];
     context?: { walletBalance?: number; cart?: CartItem[]; displayName?: string; today?: string };
+    image?: PendingImageInput;
   };
 
   const normalizedContext: RequestContext = {
@@ -572,9 +643,9 @@ export async function POST(req: NextRequest) {
     hotelBooking: ReturnType<typeof executeBookHotel> | null;
   };
   const attempts: { name: string; run: () => Promise<ProviderResult> }[] = [];
-  if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext) });
-  if (anthropicKey) attempts.push({ name: "Anthropic", run: () => runAnthropic(messages, anthropicKey, normalizedContext) });
-  if (openrouterKey) attempts.push({ name: "OpenRouter", run: () => runOpenRouter(messages, openrouterKey, normalizedContext) });
+  if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext, image) });
+  if (anthropicKey) attempts.push({ name: "Anthropic", run: () => runAnthropic(messages, anthropicKey, normalizedContext, image) });
+  if (openrouterKey) attempts.push({ name: "OpenRouter", run: () => runOpenRouter(messages, openrouterKey, normalizedContext, image) });
 
   for (const attempt of attempts) {
     try {

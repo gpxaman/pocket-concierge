@@ -173,4 +173,6 @@ export interface ChatMessage {
   itemIds?: string[];
   mode?: "claude" | "gemini" | "openrouter" | "fallback";
   createdAt: number;
+  /** An image attached to this turn (base64 data URL), shown as a thumbnail in the transcript. */
+  imageDataUrl?: string;
 }

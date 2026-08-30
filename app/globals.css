@@ -84,3 +84,25 @@ body {
   100% { transform: scale(2.1); opacity: 0; }
 }
 .voice-ring { animation: ring-expand 2.2s ease-out infinite; border: 1.5px solid rgba(245, 197, 24, 0.55); }
+
+/* Organic "cloud" orb — layered blurred blobs drifting independently, so it
+   reads as a soft living shape rather than a flat disc. */
+@keyframes cloud-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(6%, -5%) scale(1.07); }
+  66% { transform: translate(-5%, 4%) scale(0.95); }
+}
+@keyframes cloud-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-6%, 6%) scale(1.09); }
+}
+.cloud-layer-1 { animation: cloud-drift-1 7s ease-in-out infinite; }
+.cloud-layer-2 { animation: cloud-drift-2 9s ease-in-out infinite; }
+
+@keyframes cloud-speak-pulse {
+  0%, 100% { transform: scale(1); }
+  25% { transform: scale(1.12); }
+  50% { transform: scale(0.95); }
+  75% { transform: scale(1.08); }
+}
+.cloud-speaking { animation: cloud-speak-pulse 1.1s ease-in-out infinite; }

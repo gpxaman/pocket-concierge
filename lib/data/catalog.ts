@@ -1180,31 +1180,9 @@ export const CATALOG: CatalogItem[] = [
     freeCancellation: true,
   },
 
-  // Rides
-  {
-    id: "ride-001",
-    category: "rides",
-    providerId: "fleet-standard",
-    providerName: "QuickRide",
-    title: "Standard (4-seater)",
-    subtitle: "Sedan · AC",
-    price: 189,
-    currency: "INR",
-    attributes: { seats: 4, class: "standard" },
-    etaMinutes: 4,
-  },
-  {
-    id: "ride-002",
-    category: "rides",
-    providerId: "fleet-premium",
-    providerName: "QuickRide",
-    title: "Premium (4-seater)",
-    subtitle: "Sedan · AC · Top-rated drivers",
-    price: 329,
-    currency: "INR",
-    attributes: { seats: 4, class: "premium" },
-    etaMinutes: 3,
-  },
+  // Rides — no CatalogItems here. Fares are distance-computed from
+  // lib/data/rideTypes.ts + lib/pricing.ts's priceRide, not fixed catalog
+  // prices (see /explore/rides), so there's nothing fixed-price to list.
 
   // Services
   {

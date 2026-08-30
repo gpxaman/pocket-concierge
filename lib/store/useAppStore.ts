@@ -15,7 +15,10 @@ import {
 } from "@/lib/types";
 import { BRAND_LABEL, detectBrand, last4Of } from "@/lib/payments";
 import { cartWithItemAdded, findById } from "@/lib/data/catalog";
-import { priceCart, priceStay } from "@/lib/pricing";
+import { priceCart, priceStay, priceRide } from "@/lib/pricing";
+import { pointsForAmount } from "@/lib/loyalty";
+import { findRideType } from "@/lib/data/rideTypes";
+import { Driver, pickDriver } from "@/lib/data/drivers";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -46,8 +49,11 @@ interface AppState {
   chatMessages: ChatMessage[];
   displayName: string;
   cart: CartItem[];
+  /** Lifetime loyalty points — see lib/loyalty.ts for tiers and the earn rate. */
+  points: number;
 
   logAudit: (a: Omit<AuditRecord, "id" | "timestamp" | "correlationId"> & { correlationId?: string }) => void;
+  addPoints: (amount: number) => void;
 
   createDraft: (item: CatalogItem, type: Transaction["type"]) => Transaction;
   authorizeTransaction: (
@@ -95,6 +101,14 @@ interface AppState {
   ) =>
     | { ok: true; transaction: Transaction }
     | { ok: false; reason: "invalid_dates" | "not_found" | "insufficient_balance" | "no_payment_method" };
+
+  /** Books a ride for a pickup/drop pair — distance-priced, not catalog-priced (see lib/pricing.ts's priceRide). */
+  bookRide: (
+    input: { rideTypeId: string; pickup: string; drop: string; distanceKm: number; source: PaymentSource },
+    opts?: { placedBy?: "USER" | "AI_AGENT" }
+  ) =>
+    | { ok: true; transaction: Transaction; driver: Driver }
+    | { ok: false; reason: "invalid_ride_type" | "insufficient_balance" | "no_payment_method" };
 }
 
 function etaMinutesFor(items: { itemId: string; qty: number }[]): number | undefined {
@@ -126,6 +140,9 @@ export const useAppStore = create<AppState>()(
       chatMessages: [],
       displayName: "",
       cart: [],
+      points: 0,
+
+      addPoints: (amount) => set((s) => ({ points: s.points + amount })),
 
       logAudit: (a) =>
         set((s) => ({
@@ -462,6 +479,7 @@ export const useAppStore = create<AppState>()(
           transactions: [tx, ...s.transactions],
           walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
           cart: [],
+          points: s.points + pointsForAmount(total),
           ledger: [
             {
               id: uid("ledg"),
@@ -557,6 +575,7 @@ export const useAppStore = create<AppState>()(
         set((s) => ({
           transactions: [tx, ...s.transactions],
           walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
+          points: s.points + pointsForAmount(total),
           ledger: [
             {
               id: uid("ledg"),
@@ -593,6 +612,95 @@ export const useAppStore = create<AppState>()(
         }
 
         return { ok: true as const, transaction: tx };
+      },
+
+      bookRide: ({ rideTypeId, pickup, drop, distanceKm, source }, opts) => {
+        const rideType = findRideType(rideTypeId);
+        if (!rideType) return { ok: false as const, reason: "invalid_ride_type" as const };
+
+        const { total } = priceRide(rideType, distanceKm);
+        const useWallet = source === "wallet";
+
+        let sourceLabel: string;
+        if (useWallet) {
+          if (get().walletBalance < total) {
+            get().logAudit({
+              actorType: "USER",
+              action: "purchase_blocked",
+              resourceType: "ride",
+              policyDecision: "blocked",
+              detail: `Insufficient wallet balance for ₹${total} ride (PRD §8 policy check).`,
+            });
+            return { ok: false as const, reason: "insufficient_balance" as const };
+          }
+          sourceLabel = "Wallet balance";
+        } else {
+          const methods = get().paymentMethods;
+          const method = methods.find((m) => m.id === source) ?? methods.find((m) => m.isDefault) ?? methods[0];
+          if (!method) return { ok: false as const, reason: "no_payment_method" as const };
+          sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
+        }
+
+        const driver = pickDriver(rideType.id);
+        const now = Date.now();
+
+        const tx: Transaction = {
+          id: uid("txn"),
+          type: "RIDE",
+          status: "confirmed",
+          itemId: rideType.id,
+          itemTitle: `${rideType.label} · ${pickup} → ${drop}`,
+          providerName: driver.name,
+          amount: total,
+          currency: "INR",
+          createdAt: now,
+          updatedAt: now,
+          meta: {
+            card: sourceLabel,
+            pickup,
+            drop,
+            distanceKm: String(distanceKm),
+            driverName: driver.name,
+            vehicleModel: driver.vehicleModel,
+            vehicleNumber: driver.vehicleNumber,
+            driverRating: String(driver.rating),
+          },
+          history: [
+            { status: "draft", at: now },
+            { status: "confirmed", at: now },
+          ],
+          etaMinutes: rideType.etaMinutes,
+          placedBy: opts?.placedBy ?? "USER",
+        };
+
+        set((s) => ({
+          transactions: [tx, ...s.transactions],
+          walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
+          points: s.points + pointsForAmount(total),
+          ledger: [
+            {
+              id: uid("ledg"),
+              transactionId: tx.id,
+              amount: total,
+              direction: "debit",
+              note: `RIDE · ${rideType.label} (${pickup} → ${drop})`,
+              sourceLabel,
+              at: now,
+            },
+            ...s.ledger,
+          ],
+        }));
+
+        get().logAudit({
+          actorType: "USER",
+          action: "ride_confirmed",
+          resourceType: "ride",
+          resourceId: tx.id,
+          policyDecision: "allowed",
+          detail: `User confirmed ₹${total} ${rideType.label} ride (${pickup} to ${drop}) on ${sourceLabel}.`,
+        });
+
+        return { ok: true as const, transaction: tx, driver };
       },
     }),
     { name: "pocket-concierge-store", version: 3 }

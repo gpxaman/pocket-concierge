@@ -1,5 +1,6 @@
 import { CartItem } from "@/lib/types";
 import { findById } from "@/lib/data/catalog";
+import { RideType } from "@/lib/data/rideTypes";
 
 export interface PriceBreakdown {
   itemTotal: number;
@@ -57,4 +58,18 @@ export function priceStay(pricePerNight: number, nights: number): StayPriceBreak
   const roomTotal = pricePerNight * nights;
   const taxesAndFees = Math.round(roomTotal * 0.12);
   return { nights, roomTotal, taxesAndFees, total: roomTotal + taxesAndFees };
+}
+
+export interface RidePriceBreakdown {
+  baseFare: number;
+  distanceFare: number;
+  total: number;
+}
+
+// Same discipline again: one function computing what a ride actually costs,
+// used by the ride page's fare estimate, the booking confirmation's bill
+// summary, and useAppStore.bookRide's real charge.
+export function priceRide(rideType: RideType, distanceKm: number): RidePriceBreakdown {
+  const distanceFare = Math.round(rideType.perKm * distanceKm);
+  return { baseFare: rideType.baseFare, distanceFare, total: rideType.baseFare + distanceFare };
 }
