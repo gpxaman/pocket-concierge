@@ -24,10 +24,13 @@ const QUICK_ACTIONS: { category: ServiceCategory; label: string; prompt: string 
 ];
 
 function renderInline(text: string) {
-  // Chat bubbles are plain text (no markdown renderer) but the model still
-  // emits **bold** for emphasis — split on it so the asterisks don't leak
-  // into the UI as literal characters.
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  // Chat bubbles are plain text (no markdown renderer). The system prompt asks
+  // models to skip markdown bullets, but Gemini in particular still emits
+  // "*   item" list lines sometimes — normalize those to a real bullet glyph
+  // so a broken instruction-follow doesn't leak raw asterisks into the UI.
+  const normalized = text.replace(/^\s*\*(?!\*)\s+/gm, "• ");
+  // **bold** is still supported and split out separately below.
+  const parts = normalized.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) =>
     part.startsWith("**") && part.endsWith("**") ? (
       <strong key={i} className="font-semibold">
@@ -191,7 +194,7 @@ export default function ChatPanel() {
                   {renderInline(m.content)}
                 </div>
                 {m.role === "assistant" && m.mode === "fallback" && (
-                  <p className="px-1 text-[10px] text-ink/35">Demo mode — no ANTHROPIC_API_KEY set.</p>
+                  <p className="px-1 text-[10px] text-ink/35">Demo mode — no GEMINI_API_KEY / ANTHROPIC_API_KEY set.</p>
                 )}
                 {m.itemIds && m.itemIds.length > 0 && (
                   <div className="space-y-2">

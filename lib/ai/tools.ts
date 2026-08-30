@@ -91,13 +91,25 @@ export function executeSearch(input: {
   if (input.category) results = results.filter((c) => c.category === input.category);
   if (typeof input.max_price === "number") results = results.filter((c) => c.price <= input.max_price!);
   if (typeof input.min_rating === "number") results = results.filter((c) => (c.rating ?? 0) >= input.min_rating!);
+
   if (input.query) {
-    const q = input.query.toLowerCase();
-    results = results.filter((c) => {
-      const hay = [c.title, c.subtitle ?? "", c.providerName, JSON.stringify(c.attributes)].join(" ").toLowerCase();
-      return q.split(/\s+/).some((term) => term.length > 2 && hay.includes(term));
-    });
+    const terms = input.query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+    if (terms.length > 0) {
+      const scored = results.map((c) => {
+        const hay = [c.category, c.title, c.subtitle ?? "", c.providerName, JSON.stringify(c.attributes)]
+          .join(" ")
+          .toLowerCase();
+        return { item: c, score: terms.filter((t) => hay.includes(t)).length };
+      });
+      const matched = scored.filter((s) => s.score > 0);
+      // Free text is a ranking signal, not a hard filter: mock item copy ("Acer Aspire 7")
+      // rarely contains the query's literal words ("laptop"), and dropping every structurally
+      // correct match (right category/price/rating) just because of that would be wrong —
+      // fall back to the full (already category/price/rating-filtered) set instead.
+      results = (matched.length > 0 ? matched : scored).sort((a, b) => b.score - a.score).map((s) => s.item);
+    }
   }
+
   return results.slice(0, 8).map(trim);
 }
 

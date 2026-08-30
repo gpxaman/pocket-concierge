@@ -1,10 +1,10 @@
 import { CATALOG } from "@/lib/data/catalog";
 import { CatalogItem, ChatMessage } from "@/lib/types";
 
-// Zero-config demo agent used when ANTHROPIC_API_KEY is not set, so the app
-// is fully interactive out of the box. It's deliberately simple keyword
-// matching + scoring, not a real planner — the real path is route.ts's
-// Claude tool-use loop.
+// Zero-config demo agent used when neither GEMINI_API_KEY nor
+// ANTHROPIC_API_KEY is set, so the app is fully interactive out of the box.
+// It's deliberately simple keyword matching + scoring, not a real planner —
+// the real path is route.ts's Gemini/Claude tool-use loop.
 
 interface FallbackResult {
   reply: string;
@@ -61,7 +61,7 @@ export function runFallbackAgent(messages: ChatMessage[]): FallbackResult {
     .join("\n");
 
   return {
-    reply: `Here's what I'd point you to${budgetNote}, best fit first:\n\n${reasonBits}\n\nSet ANTHROPIC_API_KEY for the full reasoning concierge — this is the zero-config demo mode.`,
+    reply: `Here's what I'd point you to${budgetNote}, best fit first:\n\n${reasonBits}\n\nSet GEMINI_API_KEY or ANTHROPIC_API_KEY for the full reasoning concierge — this is the zero-config demo mode.`,
     itemIds: top.map((c) => c.id),
   };
 }

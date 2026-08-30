@@ -95,6 +95,6 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   itemIds?: string[];
-  mode?: "claude" | "fallback";
+  mode?: "claude" | "gemini" | "fallback";
   createdAt: number;
 }
