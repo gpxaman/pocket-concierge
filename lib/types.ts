@@ -36,6 +36,14 @@ export interface CatalogItem {
   weight?: string;
   /** Which grocery shelf/category this product belongs to (Blinkit-style subcategory). */
   groceryCategoryId?: string;
+  /** Max occupancy for a hotel room. */
+  maxGuests?: number;
+  /** e.g. "1 King Bed", "2 Queen Beds" (hotel rooms only). */
+  bedType?: string;
+  /** Breakfast included in the room rate. */
+  breakfastIncluded?: boolean;
+  /** Free cancellation up to check-in vs. non-refundable (Booking.com-style policy flag). */
+  freeCancellation?: boolean;
 }
 
 export interface Restaurant {
@@ -57,6 +65,23 @@ export interface Restaurant {
 export interface GroceryCategoryMeta {
   id: string;
   label: string;
+}
+
+export interface Hotel {
+  id: string; // matches the providerId used by this hotel's room CatalogItems
+  name: string;
+  /** Hotel class, 1-5 stars. */
+  starRating: number;
+  /** Booking.com-style guest review score, 0-10. */
+  reviewScore: number;
+  reviewCount: number;
+  area: string;
+  address: string;
+  amenities: string[];
+  description: string;
+  /** Placeholder banner gradient — no real photos in this prototype. */
+  gradientFrom: string;
+  gradientTo: string;
 }
 
 export type TransactionType = "ORDER" | "BOOKING" | "RIDE";
