@@ -89,7 +89,10 @@ interface AppState {
     | { ok: false; reason: "empty_cart" | "insufficient_balance" | "no_payment_method" };
 
   /** Books a hotel room for a date range — a separate flow from the cart (dates/nights, not qty). */
-  bookHotel: (input: { itemId: string; checkIn: string; checkOut: string; guests: number; source: PaymentSource }) =>
+  bookHotel: (
+    input: { itemId: string; checkIn: string; checkOut: string; guests: number; source: PaymentSource },
+    opts?: { placedBy?: "USER" | "AI_AGENT" }
+  ) =>
     | { ok: true; transaction: Transaction }
     | { ok: false; reason: "invalid_dates" | "not_found" | "insufficient_balance" | "no_payment_method" };
 }
@@ -493,7 +496,7 @@ export const useAppStore = create<AppState>()(
         return { ok: true as const, transaction: tx };
       },
 
-      bookHotel: ({ itemId, checkIn, checkOut, guests, source }) => {
+      bookHotel: ({ itemId, checkIn, checkOut, guests, source }, opts) => {
         const item = findById(itemId);
         if (!item || item.category !== "hotels") return { ok: false as const, reason: "not_found" as const };
 
@@ -548,7 +551,7 @@ export const useAppStore = create<AppState>()(
             { status: "draft", at: now },
             { status: "confirmed", at: now },
           ],
-          placedBy: "USER",
+          placedBy: opts?.placedBy ?? "USER",
         };
 
         set((s) => ({
@@ -578,6 +581,16 @@ export const useAppStore = create<AppState>()(
             guests > 1 ? "s" : ""
           }) on ${sourceLabel}.`,
         });
+        if (opts?.placedBy === "AI_AGENT") {
+          get().logAudit({
+            actorType: "AI_AGENT",
+            action: "booking_placed",
+            resourceType: "booking",
+            resourceId: tx.id,
+            policyDecision: "allowed",
+            detail: `Booked ${item.title} at ${item.providerName} — ₹${total}.`,
+          });
+        }
 
         return { ok: true as const, transaction: tx };
       },

@@ -7,6 +7,7 @@ import clsx from "clsx";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { ChatMessage } from "@/lib/types";
 import { findById } from "@/lib/data/catalog";
+import { todayIso } from "@/lib/dates";
 import ItemCard from "@/components/ItemCard";
 
 type Phase = "idle" | "listening" | "thinking" | "speaking" | "denied";
@@ -108,6 +109,7 @@ export default function HomeAgent() {
   const setCart = useAppStore((s) => s.setCart);
   const walletBalance = useAppStore((s) => s.walletBalance);
   const placeOrderFromCart = useAppStore((s) => s.placeOrderFromCart);
+  const bookHotel = useAppStore((s) => s.bookHotel);
 
   const [started, setStarted] = useState(chatMessages.length > 0);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -243,7 +245,12 @@ export default function HomeAgent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: history,
-          context: { walletBalance: useAppStore.getState().walletBalance, cart: useAppStore.getState().cart, displayName },
+          context: {
+            walletBalance: useAppStore.getState().walletBalance,
+            cart: useAppStore.getState().cart,
+            displayName,
+            today: todayIso(),
+          },
         }),
       });
       const data = await res.json();
@@ -273,6 +280,27 @@ export default function HomeAgent() {
             id: uid(),
             role: "assistant",
             content: "Sorry — something changed and I couldn't finish placing that order. Please try again.",
+            createdAt: Date.now(),
+          });
+        }
+      }
+
+      if (data.hotelBooking?.ok) {
+        const commit = bookHotel(
+          {
+            itemId: data.hotelBooking.item_id,
+            checkIn: data.hotelBooking.check_in,
+            checkOut: data.hotelBooking.check_out,
+            guests: data.hotelBooking.guests,
+            source: "wallet",
+          },
+          { placedBy: "AI_AGENT" }
+        );
+        if (!commit.ok) {
+          addChatMessage({
+            id: uid(),
+            role: "assistant",
+            content: "Sorry — something changed and I couldn't finish that booking. Please try again.",
             createdAt: Date.now(),
           });
         }

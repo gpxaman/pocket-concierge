@@ -1,5 +1,5 @@
 import { CATALOG, cartWithItemAdded, findById } from "@/lib/data/catalog";
-import { priceCart } from "@/lib/pricing";
+import { priceCart, priceStay } from "@/lib/pricing";
 import { CartItem, CatalogItem, ServiceCategory } from "@/lib/types";
 
 // Typed tool contracts (TRD §8.3). search_catalog/get_item are read-only —
@@ -31,6 +31,10 @@ export const AI_TOOLS = [
         },
         max_price: { type: "number", description: "Upper price bound in INR." },
         min_rating: { type: "number", description: "Minimum rating (0-5)." },
+        min_guests: {
+          type: "number",
+          description: "Hotels only — require the room to fit at least this many guests.",
+        },
       },
     },
   },
@@ -98,6 +102,37 @@ export const AI_TOOLS = [
       required: ["confirm"],
     },
   },
+  {
+    name: "preview_hotel_booking",
+    description:
+      "Look up the real price and availability for a specific hotel room and date range. Always call this before book_hotel and before telling the user any total — never compute or guess a hotel price yourself. Does not book anything or spend money.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        item_id: { type: "string", description: "A hotel room id from search_catalog/get_item results." },
+        check_in: { type: "string", description: "Check-in date, YYYY-MM-DD." },
+        check_out: { type: "string", description: "Check-out date, YYYY-MM-DD." },
+        guests: { type: "number", description: "Number of guests." },
+      },
+      required: ["item_id", "check_in", "check_out", "guests"],
+    },
+  },
+  {
+    name: "book_hotel",
+    description:
+      "Terminal tool. Books the room and charges the wallet for the full stay. Only call this after you've called preview_hotel_booking, told the user the room/dates/total, AND the user has explicitly confirmed in their latest message that they want to go ahead — never call it speculatively or on the same turn you first proposed the booking.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        item_id: { type: "string" },
+        check_in: { type: "string", description: "Check-in date, YYYY-MM-DD." },
+        check_out: { type: "string", description: "Check-out date, YYYY-MM-DD." },
+        guests: { type: "number" },
+        confirm: { type: "boolean", description: "Must be true — restates that the user just confirmed." },
+      },
+      required: ["item_id", "check_in", "check_out", "guests", "confirm"],
+    },
+  },
 ] as const;
 
 export type ToolName = (typeof AI_TOOLS)[number]["name"];
@@ -119,6 +154,10 @@ function trim(item: CatalogItem) {
     menu_section: item.menuSection,
     bestseller: item.isBestseller,
     weight: item.weight,
+    max_guests: item.maxGuests,
+    bed_type: item.bedType,
+    breakfast_included: item.breakfastIncluded,
+    free_cancellation: item.freeCancellation,
     attributes: item.attributes,
   };
 }
@@ -128,11 +167,13 @@ export function executeSearch(input: {
   query?: string;
   max_price?: number;
   min_rating?: number;
+  min_guests?: number;
 }) {
   let results = CATALOG;
   if (input.category) results = results.filter((c) => c.category === input.category);
   if (typeof input.max_price === "number") results = results.filter((c) => c.price <= input.max_price!);
   if (typeof input.min_rating === "number") results = results.filter((c) => (c.rating ?? 0) >= input.min_rating!);
+  if (typeof input.min_guests === "number") results = results.filter((c) => (c.maxGuests ?? 99) >= input.min_guests!);
 
   if (input.query) {
     const terms = input.query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
@@ -216,4 +257,81 @@ export function executePlaceOrder(cart: CartItem[], walletBalance: number) {
   const etaCandidates = catalogItems.map((i) => i.etaMinutes).filter((n): n is number => typeof n === "number");
   const eta_minutes = etaCandidates.length > 0 ? Math.max(...etaCandidates) : undefined;
   return { ok: true as const, items: summary, total, delivery_fee: deliveryFee, platform_fee: platformFee, gst, eta_minutes };
+}
+
+interface HotelBookingInput {
+  item_id: string;
+  check_in: string;
+  check_out: string;
+  guests: number;
+}
+
+/** Read-only: validates the request and computes the real price. Never mutates anything. */
+export function executePreviewHotelBooking(input: HotelBookingInput) {
+  const room = findById(input.item_id);
+  if (!room || room.category !== "hotels") return { error: `No hotel room with id ${input.item_id}.` };
+  if (typeof room.maxGuests === "number" && room.maxGuests < input.guests) {
+    return { error: `${room.title} fits up to ${room.maxGuests} guest${room.maxGuests > 1 ? "s" : ""}, not ${input.guests}.` };
+  }
+
+  const checkInMs = new Date(`${input.check_in}T00:00:00`).getTime();
+  const checkOutMs = new Date(`${input.check_out}T00:00:00`).getTime();
+  if (!Number.isFinite(checkInMs) || !Number.isFinite(checkOutMs) || checkOutMs <= checkInMs) {
+    return { error: "check_out must be a valid date (YYYY-MM-DD) after check_in." };
+  }
+  const nights = Math.round((checkOutMs - checkInMs) / 86_400_000);
+  const { roomTotal, taxesAndFees, total } = priceStay(room.price, nights);
+
+  return {
+    item_id: room.id,
+    title: room.title,
+    hotel: room.providerName,
+    check_in: input.check_in,
+    check_out: input.check_out,
+    nights,
+    guests: input.guests,
+    price_per_night: room.price,
+    room_total: roomTotal,
+    taxes_and_fees: taxesAndFees,
+    total,
+    free_cancellation: room.freeCancellation ?? false,
+    breakfast_included: room.breakfastIncluded ?? false,
+  };
+}
+
+export type HotelBookingPreview = Exclude<ReturnType<typeof executePreviewHotelBooking>, { error: string }>;
+
+/** Read-only validation + pricing, same as the preview — the real booking is committed
+ *  client-side (useAppStore.bookHotel) once this reports ok:true, mirroring place_order. */
+export function executeBookHotel(input: HotelBookingInput, walletBalance: number) {
+  const preview = executePreviewHotelBooking(input);
+  if ("error" in preview) return { ok: false as const, reason: "invalid" as const, error: preview.error };
+  if (walletBalance < preview.total) {
+    return {
+      ok: false as const,
+      reason: "insufficient_balance" as const,
+      total: preview.total,
+      walletBalance,
+      shortfall: preview.total - walletBalance,
+    };
+  }
+  return { ok: true as const, ...preview };
+}
+
+// Same reasoning as describeOrderResult: never trust the model's own words for
+// a tool that moves money — always rebuild the reply from the real result.
+export function describeHotelBookingResult(result: ReturnType<typeof executeBookHotel> | null): string | null {
+  if (!result) return null;
+  if (result.ok) {
+    return `Done — booked ${result.title} at ${result.hotel} for ${result.check_in} to ${result.check_out} (${result.nights} night${
+      result.nights > 1 ? "s" : ""
+    }), ₹${result.total.toLocaleString("en-IN")} total. You can see it in Activity.`;
+  }
+  if (result.reason === "insufficient_balance") {
+    return `Your wallet has ₹${result.walletBalance.toLocaleString("en-IN")}, which isn't enough for the ₹${result.total.toLocaleString(
+      "en-IN"
+    )} total — add ₹${result.shortfall.toLocaleString("en-IN")} more from the Payments tab and I can book it right away.`;
+  }
+  if (result.reason === "invalid") return result.error ?? "That booking didn't go through — let's try again.";
+  return "That booking didn't go through — let's try again.";
 }

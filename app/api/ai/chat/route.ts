@@ -4,17 +4,30 @@ import { GoogleGenAI, Content as GeminiContent, FunctionDeclaration } from "@goo
 import {
   AI_TOOLS,
   describeCartState,
+  describeHotelBookingResult,
   executeAddToCart,
+  executeBookHotel,
   executeGetItem,
   executePlaceOrder,
+  executePreviewHotelBooking,
   executeRemoveFromCart,
   executeSearch,
+  HotelBookingPreview,
 } from "@/lib/ai/tools";
 import { runFallbackAgent } from "@/lib/ai/fallback";
 import { CartItem, ChatMessage } from "@/lib/types";
 import { findById } from "@/lib/data/catalog";
 
 export const runtime = "nodejs";
+
+interface RequestContext {
+  walletBalance: number;
+  cart: CartItem[];
+  displayName?: string;
+  /** Today's date (YYYY-MM-DD) from the client's own clock/timezone — never computed server-side,
+   *  since a server's local date can legitimately differ from the user's (see lib/dates.ts). */
+  today?: string;
+}
 
 const BASE_SYSTEM_PROMPT = `You are the AI concierge that IS this app's home screen — a voice-first agent, not a
 plain chatbot. Users describe an outcome they want (buying a laptop, booking a hotel, ordering food, getting a
@@ -41,10 +54,21 @@ Conversation shape:
 - CRITICAL: an order is only real once you have called place_order in THIS turn and it returned ok:true. Never
   say "done", "ordered" or "placed" from memory, assumption, or politeness — if you have not just called
   place_order successfully, you have not placed anything.
+- Hotels work differently from the cart: use search_catalog (category "hotels") to find rooms, then ALWAYS
+  call preview_hotel_booking with the room id, check-in/check-out dates and guest count before quoting a price
+  — never compute or guess a hotel total yourself. Resolve relative dates ("tomorrow", "this weekend", "3
+  nights from Friday") against today's date given below. State the room, dates, nights and total, then wait
+  for explicit confirmation on a later turn — same confirmation rule as place_order.
+- CRITICAL for hotels: on the turn the user confirms, call preview_hotel_booking again FIRST with the exact
+  same item_id/check_in/check_out/guests, THEN call book_hotel — every single time, even though you already
+  previewed it earlier. The earlier preview was a different request and this model does not reliably recall
+  the exact item_id string across turns; re-previewing in the same turn as the booking is what makes sure the
+  right room actually gets booked. Never call book_hotel without a preview_hotel_booking call earlier in that
+  same turn.
 - Keep replies tight: 1-4 sentences, spoken-voice style. Plain prose only — no markdown bullet/numbered lists
   or headings (the client renders **bold** but nothing else literally).`;
 
-function buildSystemPrompt(context: { walletBalance: number; cart: CartItem[]; displayName?: string }) {
+function buildSystemPrompt(context: RequestContext) {
   const cartLines = context.cart
     .map((c) => {
       const item = findById(c.itemId);
@@ -56,6 +80,7 @@ function buildSystemPrompt(context: { walletBalance: number; cart: CartItem[]; d
   return `${BASE_SYSTEM_PROMPT}
 
 Live account state (authoritative — trust this over anything said earlier in the conversation):
+- Today's date: ${context.today || "unknown — ask the user to confirm a date if they use a relative one like \"tomorrow\""}
 - User's name: ${context.displayName || "the user"}
 - Wallet balance: ₹${context.walletBalance.toLocaleString("en-IN")}
 - Current cart: ${context.cart.length === 0 ? "empty" : `\n${cartLines}`}`;
@@ -87,7 +112,15 @@ function describeOrderResult(orderResult: ReturnType<typeof executePlaceOrder> |
 // turn, the grounded post-state always wins over whatever the model said,
 // since a small model can narrate "removed it!" without the tool call
 // landing (wrong item_id, no call made, etc).
-function finalizeReply(finalText: string, cart: CartItem[], startingCart: CartItem[], orderResult: ReturnType<typeof executePlaceOrder> | null): string {
+function finalizeReply(
+  finalText: string,
+  cart: CartItem[],
+  startingCart: CartItem[],
+  orderResult: ReturnType<typeof executePlaceOrder> | null,
+  hotelBooking: ReturnType<typeof executeBookHotel> | null
+): string {
+  const groundedHotel = describeHotelBookingResult(hotelBooking);
+  if (groundedHotel) return groundedHotel;
   const grounded = describeOrderResult(orderResult);
   if (grounded) return grounded;
   const cartMutated = JSON.stringify(cart) !== JSON.stringify(startingCart);
@@ -96,7 +129,7 @@ function finalizeReply(finalText: string, cart: CartItem[], startingCart: CartIt
 
 type AsUserAssistant = ChatMessage & { role: "user" | "assistant" };
 const isUserOrAssistant = (m: ChatMessage): m is AsUserAssistant => m.role === "user" || m.role === "assistant";
-const isTerminalTool = (name: string) => name === "present_recommendations" || name === "place_order";
+const isTerminalTool = (name: string) => name === "present_recommendations" || name === "place_order" || name === "book_hotel";
 
 // A model that answers a clear action request with plain text and zero tool
 // calls is exactly the failure mode that slips past finalizeReply (nothing
@@ -104,7 +137,8 @@ const isTerminalTool = (name: string) => name === "present_recommendations" || n
 // confirmation. This is a coarse heuristic (only used to decide whether a
 // no-tool-call response is worth retrying on a different model), not a
 // substitute for the LLM's own judgment elsewhere.
-const ACTION_INTENT_RE = /\b(add|remove|delete|order|buy|purchase|checkout|place it|place the order|do it|go ahead|yes|confirm(ed)?)\b/i;
+const ACTION_INTENT_RE =
+  /\b(add|remove|delete|order|buy|purchase|checkout|book|reserve|place it|place the order|do it|go ahead|yes|confirm(ed)?)\b/i;
 function expectsToolAction(lastUserText: string): boolean {
   return ACTION_INTENT_RE.test(lastUserText);
 }
@@ -114,7 +148,13 @@ interface ToolRunResult {
   cart: CartItem[];
 }
 
-function runToolByName(name: string, input: Record<string, unknown>, cart: CartItem[], walletBalance: number): ToolRunResult {
+function runToolByName(
+  name: string,
+  input: Record<string, unknown>,
+  cart: CartItem[],
+  walletBalance: number,
+  lastHotelPreview: HotelBookingPreview | null
+): ToolRunResult {
   if (name === "search_catalog") return { result: executeSearch(input as Parameters<typeof executeSearch>[0]), cart };
   if (name === "get_item") return { result: executeGetItem((input as { item_id: string }).item_id), cart };
   if (name === "present_recommendations") return { result: { acknowledged: true }, cart };
@@ -127,14 +167,27 @@ function runToolByName(name: string, input: Record<string, unknown>, cart: CartI
     return { result: { cart: summary }, cart: next };
   }
   if (name === "place_order") return { result: executePlaceOrder(cart, walletBalance), cart };
+  if (name === "preview_hotel_booking" || name === "book_hotel") {
+    const hotelInput = input as unknown as { item_id: string; check_in: string; check_out: string; guests: number };
+    if (name === "preview_hotel_booking") return { result: executePreviewHotelBooking(hotelInput), cart };
+    // Prefer the last successfully-previewed booking from THIS turn over
+    // whatever the model itself passed to book_hotel — small models
+    // sometimes mistype or invent an item_id on the confirmation call even
+    // right after a correct preview_hotel_booking call.
+    const effectiveInput = lastHotelPreview
+      ? {
+          item_id: lastHotelPreview.item_id,
+          check_in: lastHotelPreview.check_in,
+          check_out: lastHotelPreview.check_out,
+          guests: lastHotelPreview.guests,
+        }
+      : hotelInput;
+    return { result: executeBookHotel(effectiveInput, walletBalance), cart };
+  }
   return { result: { error: `Unknown tool ${name}` }, cart };
 }
 
-async function runAnthropic(
-  messages: ChatMessage[],
-  apiKey: string,
-  context: { walletBalance: number; cart: CartItem[]; displayName?: string }
-) {
+async function runAnthropic(messages: ChatMessage[], apiKey: string, context: RequestContext) {
   const client = new Anthropic({ apiKey });
 
   const anthropicMessages: Anthropic.MessageParam[] = messages
@@ -145,6 +198,8 @@ async function runAnthropic(
   let finalText = "";
   let cart = context.cart;
   let orderResult: ReturnType<typeof executePlaceOrder> | null = null;
+  let hotelBooking: ReturnType<typeof executeBookHotel> | null = null;
+  let lastHotelPreview: HotelBookingPreview | null = null;
 
   // Bounded tool loop: search/get_item/cart mutations are safe to auto-run;
   // present_recommendations and place_order are terminal. Cap iterations so
@@ -168,14 +223,18 @@ async function runAnthropic(
     anthropicMessages.push({ role: "assistant", content: response.content });
 
     const toolResults: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((call) => {
-      const { result, cart: nextCart } = runToolByName(call.name, call.input as Record<string, unknown>, cart, context.walletBalance);
+      const { result, cart: nextCart } = runToolByName(call.name, call.input as Record<string, unknown>, cart, context.walletBalance, lastHotelPreview);
       cart = nextCart;
+      if (call.name === "preview_hotel_booking" && result && !("error" in (result as object))) {
+        lastHotelPreview = result as HotelBookingPreview;
+      }
       if (call.name === "present_recommendations") {
         const input = call.input as { item_ids: string[]; reasoning: string };
         recommendedIds = input.item_ids;
         finalText = finalText || input.reasoning;
       }
       if (call.name === "place_order") orderResult = result as ReturnType<typeof executePlaceOrder>;
+      if (call.name === "book_hotel") hotelBooking = result as ReturnType<typeof executeBookHotel>;
       return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
     });
 
@@ -183,8 +242,8 @@ async function runAnthropic(
     if (terminalCall) break;
   }
 
-  finalText = finalizeReply(finalText, cart, context.cart, orderResult);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "claude" as const, cart, orderResult };
+  finalText = finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "claude" as const, cart, orderResult, hotelBooking };
 }
 
 const GEMINI_TOOLS: FunctionDeclaration[] = AI_TOOLS.map((t) => ({
@@ -193,11 +252,7 @@ const GEMINI_TOOLS: FunctionDeclaration[] = AI_TOOLS.map((t) => ({
   parametersJsonSchema: t.input_schema,
 }));
 
-async function runGemini(
-  messages: ChatMessage[],
-  apiKey: string,
-  context: { walletBalance: number; cart: CartItem[]; displayName?: string }
-) {
+async function runGemini(messages: ChatMessage[], apiKey: string, context: RequestContext) {
   const ai = new GoogleGenAI({ apiKey });
 
   const contents: GeminiContent[] = messages
@@ -208,6 +263,8 @@ async function runGemini(
   let finalText = "";
   let cart = context.cart;
   let orderResult: ReturnType<typeof executePlaceOrder> | null = null;
+  let hotelBooking: ReturnType<typeof executeBookHotel> | null = null;
+  let lastHotelPreview: HotelBookingPreview | null = null;
 
   for (let turn = 0; turn < 6; turn++) {
     const response = await ai.models.generateContent({
@@ -232,14 +289,18 @@ async function runGemini(
 
     const responseParts = calls.map((call) => {
       const args = (call.args ?? {}) as Record<string, unknown>;
-      const { result, cart: nextCart } = runToolByName(call.name ?? "", args, cart, context.walletBalance);
+      const { result, cart: nextCart } = runToolByName(call.name ?? "", args, cart, context.walletBalance, lastHotelPreview);
       cart = nextCart;
+      if (call.name === "preview_hotel_booking" && result && !("error" in (result as object))) {
+        lastHotelPreview = result as HotelBookingPreview;
+      }
       if (call.name === "present_recommendations") {
         const input = args as { item_ids: string[]; reasoning: string };
         recommendedIds = input.item_ids;
         finalText = finalText || input.reasoning;
       }
       if (call.name === "place_order") orderResult = result as ReturnType<typeof executePlaceOrder>;
+      if (call.name === "book_hotel") hotelBooking = result as ReturnType<typeof executeBookHotel>;
       return { functionResponse: { id: call.id, name: call.name, response: { output: result } } };
     });
 
@@ -247,8 +308,8 @@ async function runGemini(
     if (terminalCall) break;
   }
 
-  finalText = finalizeReply(finalText, cart, context.cart, orderResult);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "gemini" as const, cart, orderResult };
+  finalText = finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "gemini" as const, cart, orderResult, hotelBooking };
 }
 
 // OpenRouter free-tier models come and go and get rate-limited fast — don't
@@ -382,15 +443,13 @@ async function callOpenRouter(apiKey: string, model: string, messages: OpenRoute
   }
 }
 
-async function runOpenRouter(
-  messages: ChatMessage[],
-  apiKey: string,
-  context: { walletBalance: number; cart: CartItem[]; displayName?: string }
-) {
+async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: RequestContext) {
   let cart = context.cart;
   let recommendedIds: string[] = [];
   let finalText = "";
   let orderResult: ReturnType<typeof executePlaceOrder> | null = null;
+  let hotelBooking: ReturnType<typeof executeBookHotel> | null = null;
+  let lastHotelPreview: HotelBookingPreview | null = null;
 
   const orMessages: OpenRouterMessage[] = [
     { role: "system", content: buildSystemPrompt({ ...context, cart }) },
@@ -459,14 +518,18 @@ async function runOpenRouter(
       } catch {
         // malformed tool-call arguments from a small free model — treat as empty input
       }
-      const { result, cart: nextCart } = runToolByName(call.function.name, args, cart, context.walletBalance);
+      const { result, cart: nextCart } = runToolByName(call.function.name, args, cart, context.walletBalance, lastHotelPreview);
       cart = nextCart;
+      if (call.function.name === "preview_hotel_booking" && result && !("error" in (result as object))) {
+        lastHotelPreview = result as HotelBookingPreview;
+      }
       if (call.function.name === "present_recommendations") {
         const input = args as { item_ids: string[]; reasoning: string };
         recommendedIds = input.item_ids;
         finalText = finalText || input.reasoning;
       }
       if (call.function.name === "place_order") orderResult = result as ReturnType<typeof executePlaceOrder>;
+      if (call.function.name === "book_hotel") hotelBooking = result as ReturnType<typeof executeBookHotel>;
       orMessages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
 
@@ -475,20 +538,21 @@ async function runOpenRouter(
 
   finalText = untrustedActionResponse
     ? "Sorry, I couldn't complete that just now — could you try again?"
-    : finalizeReply(finalText, cart, context.cart, orderResult);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "openrouter" as const, cart, orderResult };
+    : finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "openrouter" as const, cart, orderResult, hotelBooking };
 }
 
 export async function POST(req: NextRequest) {
   const { messages, context } = (await req.json()) as {
     messages: ChatMessage[];
-    context?: { walletBalance?: number; cart?: CartItem[]; displayName?: string };
+    context?: { walletBalance?: number; cart?: CartItem[]; displayName?: string; today?: string };
   };
 
-  const normalizedContext = {
+  const normalizedContext: RequestContext = {
     walletBalance: context?.walletBalance ?? 0,
     cart: context?.cart ?? [],
     displayName: context?.displayName,
+    today: context?.today,
   };
 
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -505,6 +569,7 @@ export async function POST(req: NextRequest) {
     mode: string;
     cart: CartItem[];
     orderResult: ReturnType<typeof executePlaceOrder> | null;
+    hotelBooking: ReturnType<typeof executeBookHotel> | null;
   };
   const attempts: { name: string; run: () => Promise<ProviderResult> }[] = [];
   if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext) });
@@ -526,5 +591,6 @@ export async function POST(req: NextRequest) {
     mode: "fallback" as const,
     cart: normalizedContext.cart,
     orderResult: null,
+    hotelBooking: null,
   });
 }
