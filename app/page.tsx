@@ -1,5 +1,5 @@
-import ChatPanel from "@/components/ChatPanel";
+import HomeAgent from "@/components/HomeAgent";
 
 export default function AiHomePage() {
-  return <ChatPanel />;
+  return <HomeAgent />;
 }

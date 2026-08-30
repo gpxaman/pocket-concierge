@@ -1,13 +1,15 @@
 import { CATALOG, findById } from "@/lib/data/catalog";
-import { CatalogItem, ServiceCategory } from "@/lib/types";
+import { CartItem, CatalogItem, ServiceCategory } from "@/lib/types";
 
-// Typed, read-only tool contracts (TRD §8.3). The concierge may search,
-// inspect and compare freely (PRD §8: "Search / Compare / Recommendation:
-// no confirmation"). It never receives a tool that writes state directly —
-// create_order/create_booking/request_ride are client-initiated actions
-// gated by an explicit confirm step (see components/ConfirmSheet.tsx),
-// which is what "authorization enforced outside the model" (TRD §8.5)
-// looks like in a client-only demo.
+// Typed tool contracts (TRD §8.3). search_catalog/get_item are read-only —
+// the concierge may search, inspect and compare freely (PRD §8: "Search /
+// Compare / Recommendation: no confirmation"). add_to_cart/remove_from_cart
+// mutate a working cart that is not yet paid for. place_order is the one
+// tool that moves money: it is gated in the system prompt (route.ts) to
+// require an explicit user confirmation turn first, which is what
+// "authorization enforced outside the model" (TRD §8.5) looks like when the
+// model itself drives checkout — the confirmation is the spoken/typed "yes,
+// place it", logged to the audit trail exactly like a tapped Confirm button.
 
 export const AI_TOOLS = [
   {
@@ -43,7 +45,7 @@ export const AI_TOOLS = [
   {
     name: "present_recommendations",
     description:
-      "Terminal tool. Call this once you have enough information and have grounded your choice in search_catalog/get_item results. Presents the recommended item(s) to the user with plain-language reasoning and trade-offs, per the concierge's decision-engine principles.",
+      "Terminal tool. Call this to show item options on the user's screen so they can see and compare them (e.g. several restaurants/products) — it does NOT add anything to the cart or spend any money. Ground every option in search_catalog/get_item results first.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -59,6 +61,40 @@ export const AI_TOOLS = [
         },
       },
       required: ["item_ids", "reasoning"],
+    },
+  },
+  {
+    name: "add_to_cart",
+    description:
+      "Add an item (already found via search_catalog/get_item) to the user's working cart. Does not spend money — that only happens with place_order after the user confirms.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        item_id: { type: "string" },
+        qty: { type: "number", description: "Quantity, defaults to 1." },
+      },
+      required: ["item_id"],
+    },
+  },
+  {
+    name: "remove_from_cart",
+    description: "Remove an item from the user's working cart.",
+    input_schema: {
+      type: "object" as const,
+      properties: { item_id: { type: "string" } },
+      required: ["item_id"],
+    },
+  },
+  {
+    name: "place_order",
+    description:
+      "Terminal tool. Charges the cart total to the user's wallet and places the order. Only call this after you have shown the user the cart contents and total price AND the user has explicitly confirmed in their latest message that they want to go ahead (e.g. 'yes', 'place it', 'do it', 'confirmed') — never call it speculatively or on the same turn you first proposed the order. If the wallet balance is insufficient this will fail and you must tell the user to top up instead of retrying.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        confirm: { type: "boolean", description: "Must be true — restates that the user just confirmed." },
+      },
+      required: ["confirm"],
     },
   },
 ] as const;
@@ -116,4 +152,43 @@ export function executeSearch(input: {
 export function executeGetItem(itemId: string) {
   const item = findById(itemId);
   return item ? trim(item) : { error: `No item with id ${itemId}` };
+}
+
+function cartSummary(cart: CartItem[]) {
+  return cart
+    .map((c) => {
+      const item = findById(c.itemId);
+      return item ? { item_id: item.id, title: item.title, provider: item.providerName, qty: c.qty, price: item.price } : null;
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+}
+
+/** Mutates and returns a new cart array — callers keep the returned value as the running cart for the rest of the tool loop. */
+export function executeAddToCart(cart: CartItem[], input: { item_id: string; qty?: number }): { cart: CartItem[]; summary: ReturnType<typeof cartSummary> } {
+  const item = findById(input.item_id);
+  if (!item) return { cart, summary: cartSummary(cart) };
+  const qty = input.qty && input.qty > 0 ? input.qty : 1;
+  const existing = cart.find((c) => c.itemId === input.item_id);
+  const next = existing
+    ? cart.map((c) => (c.itemId === input.item_id ? { ...c, qty: c.qty + qty } : c))
+    : [...cart, { itemId: input.item_id, qty }];
+  return { cart: next, summary: cartSummary(next) };
+}
+
+export function executeRemoveFromCart(cart: CartItem[], input: { item_id: string }): { cart: CartItem[]; summary: ReturnType<typeof cartSummary> } {
+  const next = cart.filter((c) => c.itemId !== input.item_id);
+  return { cart: next, summary: cartSummary(next) };
+}
+
+export function executePlaceOrder(cart: CartItem[], walletBalance: number) {
+  const summary = cartSummary(cart);
+  if (summary.length === 0) return { ok: false as const, reason: "empty_cart" as const };
+  const total = summary.reduce((sum, i) => sum + i.price * i.qty, 0);
+  if (walletBalance < total) {
+    return { ok: false as const, reason: "insufficient_balance" as const, total, walletBalance, shortfall: total - walletBalance };
+  }
+  const catalogItems = cart.map((c) => findById(c.itemId)).filter((i): i is CatalogItem => Boolean(i));
+  const etaCandidates = catalogItems.map((i) => i.etaMinutes).filter((n): n is number => typeof n === "number");
+  const eta_minutes = etaCandidates.length > 0 ? Math.max(...etaCandidates) : undefined;
+  return { ok: true as const, items: summary, total, eta_minutes };
 }

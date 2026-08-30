@@ -37,6 +37,14 @@ export type TransactionStatus =
   | "completed"
   | "cancelled";
 
+export interface TransactionLineItem {
+  itemId: string;
+  title: string;
+  providerName: string;
+  qty: number;
+  price: number;
+}
+
 export interface Transaction {
   id: string;
   type: TransactionType;
@@ -50,6 +58,16 @@ export interface Transaction {
   updatedAt: number;
   meta?: Record<string, string>;
   history: { status: TransactionStatus; at: number; note?: string }[];
+  /** Multi-item orders (e.g. AI-agent checkout of a cart). Absent for single-item drafts. */
+  items?: TransactionLineItem[];
+  /** Estimated arrival, set at checkout for orders/rides with a known ETA. */
+  etaMinutes?: number;
+  placedBy?: "USER" | "AI_AGENT";
+}
+
+export interface CartItem {
+  itemId: string;
+  qty: number;
 }
 
 export interface Preference {
@@ -95,6 +113,6 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   itemIds?: string[];
-  mode?: "claude" | "gemini" | "fallback";
+  mode?: "claude" | "gemini" | "openrouter" | "fallback";
   createdAt: number;
 }
