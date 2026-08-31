@@ -9,6 +9,40 @@ function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
+// Demo/prototype only — seeded once for a brand-new identity so the Chat UI
+// has something to look at before you've paired with a real second device.
+// Never real peers: sendMessage/startCall both treat isMock contacts as
+// "not actually reachable" rather than trying to hit the relay with them.
+const HOUR = 60 * 60 * 1000;
+const MOCK_CONTACTS: {
+  username: string;
+  phone: string;
+  messages: { direction: "in" | "out"; text: string; hoursAgo: number; status: ChatMessageStatus }[];
+}[] = [
+  {
+    username: "priya_sharma",
+    phone: "+91 98765 11223",
+    messages: [
+      { direction: "in", text: "Hey! Are we still on for tomorrow?", hoursAgo: 2, status: "received" },
+      { direction: "out", text: "Yes, 6pm works for me", hoursAgo: 1.9, status: "delivered" },
+    ],
+  },
+  {
+    username: "rahul_verma",
+    phone: "+91 91234 56780",
+    messages: [{ direction: "in", text: "Sent you the files, check when you're free", hoursAgo: 20, status: "received" }],
+  },
+  {
+    username: "ananya.k",
+    phone: "+91 99887 66554",
+    messages: [
+      { direction: "out", text: "Happy birthday! 🎉", hoursAgo: 30, status: "delivered" },
+      { direction: "in", text: "Thank you so much!! 😊", hoursAgo: 29.5, status: "received" },
+    ],
+  },
+  { username: "dev_patel", phone: "+91 90000 12345", messages: [] },
+];
+
 export interface ChatContact {
   id: string;
   username: string;
@@ -17,6 +51,8 @@ export interface ChatContact {
   /** Display-only for now — not a second lookup key. */
   phone?: string;
   avatarDataUrl?: string;
+  /** Seeded demo contact — never a real peer, so sendMessage simulates delivery locally instead of hitting the relay. */
+  isMock?: boolean;
 }
 
 export type ChatMessageStatus = "sending" | "delivered" | "queued_remote" | "queued_local" | "received";
@@ -46,10 +82,31 @@ export interface StoryItem {
 }
 export interface NoteItem {
   text: string;
+  /** An emoji badge shown alongside the note (real Instagram Notes support this — verified via research). */
+  emoji?: string;
+  /** Id into NOTE_COLORS — a colored bubble background (real Instagram Notes feature added mid-2025). */
+  color?: string;
   createdAt: number;
 }
 export const STORY_TTL_MS = 24 * 60 * 60 * 1000;
 export const NOTE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Curated bubble-background presets, matching the style of Instagram's colored Notes. */
+export const NOTE_COLORS: { id: string; label: string; from: string; to: string; text: string }[] = [
+  { id: "default", label: "Default", from: "#ffffff", to: "#ffffff", text: "#1a1508" },
+  { id: "purple", label: "Purple", from: "#c9a7f0", to: "#8b5cf6", text: "#ffffff" },
+  { id: "pink", label: "Pink", from: "#f9a8d4", to: "#ec4899", text: "#ffffff" },
+  { id: "blue", label: "Blue", from: "#93c5fd", to: "#3b82f6", text: "#ffffff" },
+  { id: "green", label: "Green", from: "#86efac", to: "#22c55e", text: "#ffffff" },
+  { id: "orange", label: "Orange", from: "#fdba74", to: "#f97316", text: "#ffffff" },
+  { id: "yellow", label: "Yellow", from: "#fde68a", to: "#eab308", text: "#1a1508" },
+];
+export function noteColor(id: string | undefined) {
+  return NOTE_COLORS.find((c) => c.id === id) ?? NOTE_COLORS[0];
+}
+
+/** A small curated emoji set for the note badge — not a full picker, matches the app's other lightweight preset patterns. */
+export const NOTE_EMOJIS = ["😀", "😂", "😍", "🔥", "🎉", "👀", "💭", "🙏", "😴", "🤔", "❤️", "👋"];
 
 export type UsernameStatus = "unset" | "checking" | "set" | "taken" | "invalid";
 type ClaimResult = { ok: true } | { ok: false; reason: "invalid" | "taken" | "offline" };
@@ -93,7 +150,7 @@ interface ChatState {
   setOwnAvatar: (dataUrl: string) => void;
   setMyStory: (dataUrl: string) => void;
   clearMyStory: () => void;
-  setMyNote: (text: string) => void;
+  setMyNote: (text: string, opts?: { emoji?: string; color?: string }) => void;
   clearMyNote: () => void;
 
   startCall: (contactId: string, kind: CallKind) => Promise<void>;
@@ -180,6 +237,25 @@ export const useChatStore = create<ChatState>()(
             [contactId]: [...(s.messagesByContact[contactId] ?? []), msg],
           },
         }));
+      }
+
+      function seedMockContactsIfEmpty() {
+        if (get().contacts.length > 0) return;
+        const now = Date.now();
+        const contacts: ChatContact[] = [];
+        const messagesByContact: Record<string, ChatMessageE2E[]> = {};
+        for (const mock of MOCK_CONTACTS) {
+          const id = uid("mock");
+          contacts.push({ id, username: mock.username, publicKeyJwk: {} as JsonWebKey, addedAt: now, phone: mock.phone, isMock: true });
+          messagesByContact[id] = mock.messages.map((m) => ({
+            id: uid("msg"),
+            direction: m.direction,
+            text: m.text,
+            at: now - m.hoursAgo * HOUR,
+            status: m.status,
+          }));
+        }
+        set({ contacts, messagesByContact });
       }
 
       // Looks the message up from state (rather than taking text/image as
@@ -337,6 +413,7 @@ export const useChatStore = create<ChatState>()(
           const { publicKeyJwk, privateKeyJwk } = await generateIdentityKeyPair();
           const identity: ChatIdentity = { id: uid("user"), username: null, publicKeyJwk, privateKeyJwk };
           set({ identity });
+          seedMockContactsIfEmpty();
           return identity;
         },
 
@@ -428,6 +505,13 @@ export const useChatStore = create<ChatState>()(
           if (!trimmed && !imageDataUrl) return;
           const msgId = uid("msg");
           appendMessage(contactId, { id: msgId, direction: "out", text: trimmed, imageDataUrl, at: Date.now(), status: "sending" });
+          const contact = get().contacts.find((c) => c.id === contactId);
+          if (contact?.isMock) {
+            // Not a real peer — no relay round trip (a fake publicKeyJwk
+            // would fail deriveSharedKey anyway). Simulate a delivery.
+            window.setTimeout(() => updateMessage(contactId, msgId, { status: "delivered" }), 500);
+            return;
+          }
           await attemptDeliver(contactId, msgId);
         },
 
@@ -555,6 +639,13 @@ export const useChatStore = create<ChatState>()(
           if (get().call) return;
           const contact = get().contacts.find((c) => c.id === contactId);
           if (!contact || !socket || socket.readyState !== WebSocket.OPEN) return;
+          if (contact.isMock) {
+            // Not a real peer — skip the real mic/camera prompt entirely
+            // rather than asking for permissions just to fail with
+            // call-unavailable a moment later.
+            set({ callEndedReason: "This is a demo contact — no one to call." });
+            return;
+          }
 
           set({ call: { contactId, kind, phase: "outgoing", startedAt: null, muted: false, cameraOff: false }, callEndedReason: null });
 
@@ -643,10 +734,10 @@ export const useChatStore = create<ChatState>()(
         },
         setMyStory: (dataUrl) => set({ myStory: { dataUrl, createdAt: Date.now() } }),
         clearMyStory: () => set({ myStory: null }),
-        setMyNote: (text) => {
+        setMyNote: (text, opts) => {
           const trimmed = text.trim().slice(0, 60);
           if (!trimmed) return;
-          set({ myNote: { text: trimmed, createdAt: Date.now() } });
+          set({ myNote: { text: trimmed, emoji: opts?.emoji, color: opts?.color, createdAt: Date.now() } });
         },
         clearMyNote: () => set({ myNote: null }),
       };
