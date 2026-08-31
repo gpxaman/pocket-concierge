@@ -6,7 +6,6 @@ import { ChevronLeft, Star, Clock, MapPin } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CatalogItem, Restaurant } from "@/lib/types";
 import MenuItemRow from "@/components/MenuItemRow";
-import CartFloatingBar from "@/components/CartFloatingBar";
 
 export default function RestaurantMenuView({ restaurant, items }: { restaurant: Restaurant; items: CatalogItem[] }) {
   const [switchBanner, setSwitchBanner] = useState(false);
@@ -80,7 +79,6 @@ export default function RestaurantMenuView({ restaurant, items }: { restaurant: 
         ))}
       </div>
 
-      <CartFloatingBar />
     </div>
   );
 }

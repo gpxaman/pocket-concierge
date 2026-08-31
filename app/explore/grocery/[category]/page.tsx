@@ -4,7 +4,6 @@ import { ChevronLeft } from "lucide-react";
 import { GROCERY_CATEGORIES, GROCERY_CATEGORY_ICON, findGroceryCategory } from "@/lib/data/groceryCategories";
 import { groceryByCategory } from "@/lib/data/catalog";
 import ProductCard from "@/components/ProductCard";
-import CartFloatingBar from "@/components/CartFloatingBar";
 
 export function generateStaticParams() {
   return GROCERY_CATEGORIES.map((c) => ({ category: c.id }));
@@ -34,7 +33,6 @@ export default async function GroceryCategoryPage({ params }: { params: Promise<
         )}
       </div>
 
-      <CartFloatingBar />
     </div>
   );
 }

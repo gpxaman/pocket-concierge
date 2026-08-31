@@ -31,6 +31,8 @@ const clients = new Map();
 const queues = new Map();
 /** @type {Map<string, {id: string, username: string, publicKeyJwk: object, phone?: string, avatarDataUrl?: string}>} directory, keyed by lowercased username */
 const usernames = new Map();
+/** @type {Map<string, {note: object|null, story: object|null}>} latest note/story per id — demo-scale: broadcast to everyone connected, no reverse contact graph to scope to. */
+const statuses = new Map();
 
 const wss = new WebSocketServer({ port: PORT, host: "0.0.0.0" });
 
@@ -54,6 +56,12 @@ function flushQueue(id, ws) {
   queues.delete(id);
 }
 
+function broadcast(msg, exceptId) {
+  for (const [id, sock] of clients) {
+    if (id !== exceptId) send(sock, msg);
+  }
+}
+
 wss.on("connection", (ws) => {
   let selfId = null;
 
@@ -72,7 +80,11 @@ wss.on("connection", (ws) => {
       if (existing && existing !== ws) existing.close();
       clients.set(selfId, ws);
       send(ws, { type: "welcome", id: selfId });
+      send(ws, { type: "presence_snapshot", ids: [...clients.keys()].filter((id) => id !== selfId) });
+      const statusSnapshot = [...statuses.entries()].map(([id, s]) => ({ id, note: s.note, story: s.story }));
+      if (statusSnapshot.length > 0) send(ws, { type: "status_snapshot", statuses: statusSnapshot });
       flushQueue(selfId, ws);
+      broadcast({ type: "presence", id: selfId, online: true }, selfId);
       return;
     }
 
@@ -135,6 +147,27 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.type === "read" && selfId && msg.to && typeof msg.at === "number") {
+      const frame = { type: "read", from: selfId, at: msg.at };
+      const target = clients.get(msg.to);
+      if (target && target.readyState === target.OPEN) {
+        send(target, frame);
+      } else {
+        const q = queueFor(msg.to);
+        q.push(frame);
+        if (q.length > MAX_QUEUE_PER_CLIENT) q.shift();
+      }
+      return;
+    }
+
+    if (msg.type === "status_update" && selfId) {
+      const note = msg.note ?? null;
+      const story = msg.story ?? null;
+      statuses.set(selfId, { note, story });
+      broadcast({ type: "status_update", from: selfId, note, story }, selfId);
+      return;
+    }
+
     // Call signaling (WebRTC offer/answer/ICE trickle + hangup): pure
     // passthrough, live-only — never queued, since a call only makes sense
     // if the other side is connected right now. The relay never touches
@@ -171,7 +204,10 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    if (selfId && clients.get(selfId) === ws) clients.delete(selfId);
+    if (selfId && clients.get(selfId) === ws) {
+      clients.delete(selfId);
+      broadcast({ type: "presence", id: selfId, online: false });
+    }
     // Username claims deliberately outlive the socket — someone should stay
     // findable (and able to receive queued messages) while offline.
   });

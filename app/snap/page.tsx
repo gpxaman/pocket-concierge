@@ -36,6 +36,7 @@ function SnapPageInner() {
   const [justCaptured, setJustCaptured] = useState(false);
   const [step, setStep] = useState<Step>("camera");
   const [pendingCapture, setPendingCapture] = useState<{ dataUrl: string; filterName: string } | null>(null);
+  const [notReadyNudge, setNotReadyNudge] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -67,7 +68,11 @@ function SnapPageInner() {
 
   function capture() {
     const video = videoRef.current;
-    if (!video || video.videoWidth === 0) return;
+    if (!video || video.videoWidth === 0) {
+      setNotReadyNudge(true);
+      window.setTimeout(() => setNotReadyNudge(false), 900);
+      return;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -113,68 +118,75 @@ function SnapPageInner() {
   }
 
   return (
-    <div className="px-5 pt-6 pb-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-accentDark">{forStory ? "Add to your story" : "Camera"}</p>
-          <h1 className="mt-1 text-2xl font-semibold text-ink">Snap</h1>
+    <div className="fixed inset-0 z-40 bg-ink">
+      {permission === "denied" && (
+        <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-white/60">
+          <CameraOff size={28} />
+          <p className="text-sm">Camera access was denied — allow it in your browser's site settings to use Snap.</p>
         </div>
+      )}
+      {permission !== "denied" && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="absolute inset-0 h-full w-full object-cover [transform:scaleX(-1)]"
+          style={{ filter: filterToCss(selected) }}
+        />
+      )}
+      {justCaptured && <div className="pointer-events-none absolute inset-0 bg-white/80 transition-opacity" />}
+      {permission === "pending" && (
+        <div className="absolute inset-0 flex items-center justify-center text-xs text-white/50">Starting camera…</div>
+      )}
+
+      {/* Top bar overlay */}
+      <div className="absolute inset-x-0 top-0 flex items-center justify-between px-5 pt-6">
+        <p className="rounded-full bg-black/30 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm">
+          {forStory ? "Add to your story" : "Snap"}
+        </p>
         <button
           onClick={() => setStep("memories")}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/5 text-ink/60 hover:bg-black/10"
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm active:scale-95"
           title="Memories"
         >
           <Images size={19} />
         </button>
       </div>
 
-      <div className="relative mt-4 aspect-[3/4] w-full overflow-hidden rounded-xl2 bg-ink">
-        {permission === "denied" && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-white/60">
-            <CameraOff size={28} />
-            <p className="text-sm">Camera access was denied — allow it in your browser's site settings to use Snap.</p>
-          </div>
-        )}
-        {permission !== "denied" && (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="h-full w-full object-cover [transform:scaleX(-1)]"
-            style={{ filter: filterToCss(selected) }}
-          />
-        )}
-        {justCaptured && <div className="pointer-events-none absolute inset-0 bg-white/80 transition-opacity" />}
-        {permission === "pending" && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-white/50">Starting camera…</div>
-        )}
-      </div>
+      {notReadyNudge && (
+        <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
+          <p className="rounded-full bg-black/50 px-4 py-2 text-xs font-medium text-white backdrop-blur-sm">Hold still…</p>
+        </div>
+      )}
 
-      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-        {allFilters.map((f) => (
+      {/* Bottom controls overlay */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent pb-8 pt-14">
+        <div className="flex gap-2 overflow-x-auto px-4 pb-4">
+          {allFilters.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setSelectedId(f.id)}
+              className={clsx(
+                "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur-sm transition",
+                selectedId === f.id ? "border-white bg-white text-ink" : "border-white/40 bg-black/30 text-white"
+              )}
+            >
+              {f.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex justify-center">
           <button
-            key={f.id}
-            onClick={() => setSelectedId(f.id)}
-            className={clsx(
-              "shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-              selectedId === f.id ? "border-ink bg-ink text-white" : "border-black/10 bg-white text-ink/70"
-            )}
+            onClick={capture}
+            disabled={permission !== "granted"}
+            className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-accent bg-white shadow-md transition active:scale-95 disabled:opacity-30"
+            title="Capture"
           >
-            {f.name}
+            <Camera size={26} className="text-ink" />
           </button>
-        ))}
-      </div>
-
-      <div className="mt-4 flex justify-center">
-        <button
-          onClick={capture}
-          disabled={permission !== "granted"}
-          className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-accent bg-white shadow-md transition active:scale-95 disabled:opacity-30"
-          title="Capture"
-        >
-          <Camera size={26} className="text-ink" />
-        </button>
+        </div>
       </div>
     </div>
   );

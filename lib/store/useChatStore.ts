@@ -55,7 +55,7 @@ export interface ChatContact {
   isMock?: boolean;
 }
 
-export type ChatMessageStatus = "sending" | "delivered" | "queued_remote" | "queued_local" | "received";
+export type ChatMessageStatus = "sending" | "delivered" | "queued_remote" | "queued_local" | "received" | "read";
 
 export interface ChatMessageE2E {
   id: string;
@@ -63,6 +63,9 @@ export interface ChatMessageE2E {
   text: string;
   /** An image attached to this message (e.g. a Snap sent to a contact). */
   imageDataUrl?: string;
+  /** A held-to-record voice note, as a base64 audio data URL. */
+  audioDataUrl?: string;
+  audioDurationMs?: number;
   at: number;
   status: ChatMessageStatus;
 }
@@ -133,15 +136,18 @@ interface ChatState {
   connectionStatus: "connecting" | "online" | "offline";
   call: CallState | null;
   callEndedReason: string | null;
-  /** Local-only for now — not broadcast to contacts (the relay has no presence/fan-out yet). */
   myStory: StoryItem | null;
   myNote: NoteItem | null;
+  /** Live-only (not persisted) — who's currently connected to the relay, and the latest note/story pushed by each contact. Repopulated on every connect via presence_snapshot/status_snapshot. */
+  onlineIds: Set<string>;
+  notesByContact: Record<string, NoteItem | null>;
+  storiesByContact: Record<string, StoryItem | null>;
 
   ensureIdentity: () => Promise<ChatIdentity>;
   claimUsername: (username: string) => Promise<ClaimResult>;
   addContactByUsername: (username: string) => Promise<AddContactResult>;
   removeContact: (id: string) => void;
-  sendMessage: (contactId: string, text: string, imageDataUrl?: string) => Promise<void>;
+  sendMessage: (contactId: string, text: string, imageDataUrl?: string, audio?: { dataUrl: string; durationMs: number }) => Promise<void>;
   markRead: (contactId: string) => void;
   connect: () => void;
   disconnect: () => void;
@@ -272,7 +278,12 @@ export const useChatStore = create<ChatState>()(
         }
         const sharedKey = await getSharedKey(contact);
         if (!sharedKey) return;
-        const payload = JSON.stringify({ text: msg.text, imageDataUrl: msg.imageDataUrl });
+        const payload = JSON.stringify({
+          text: msg.text,
+          imageDataUrl: msg.imageDataUrl,
+          audioDataUrl: msg.audioDataUrl,
+          audioDurationMs: msg.audioDurationMs,
+        });
         const envelope = await encryptMessage(sharedKey, payload);
         updateMessage(contactId, msgId, { status: "sending" });
         socket.send(JSON.stringify({ type: "send", to: contactId, envelope, msgId }));
@@ -322,21 +333,42 @@ export const useChatStore = create<ChatState>()(
         if (!sharedKey) return;
         try {
           const decrypted = await decryptMessage(sharedKey, envelope);
-          // Payload is JSON ({text, imageDataUrl}) — fall back to treating it
-          // as plain text if it's not (e.g. an older message shape).
+          // Payload is JSON ({text, imageDataUrl, audioDataUrl, audioDurationMs}) —
+          // fall back to treating it as plain text if it's not (e.g. an older message shape).
           let text = decrypted;
           let imageDataUrl: string | undefined;
+          let audioDataUrl: string | undefined;
+          let audioDurationMs: number | undefined;
           try {
-            const parsed = JSON.parse(decrypted) as { text?: string; imageDataUrl?: string };
+            const parsed = JSON.parse(decrypted) as {
+              text?: string;
+              imageDataUrl?: string;
+              audioDataUrl?: string;
+              audioDurationMs?: number;
+            };
             text = parsed.text ?? "";
             imageDataUrl = parsed.imageDataUrl;
+            audioDataUrl = parsed.audioDataUrl;
+            audioDurationMs = parsed.audioDurationMs;
           } catch {
             // not JSON — treat the whole thing as plain text
           }
-          appendMessage(from, { id: msgId, direction: "in", text, imageDataUrl, at: ts, status: "received" });
+          appendMessage(from, { id: msgId, direction: "in", text, imageDataUrl, audioDataUrl, audioDurationMs, at: ts, status: "received" });
           set((s) => ({ unreadByContact: { ...s.unreadByContact, [from]: (s.unreadByContact[from] ?? 0) + 1 } }));
         } catch (err) {
           console.warn("[chat] failed to decrypt incoming message", err);
+        }
+      }
+
+      /** Best-effort push of our current note/story to the relay, which
+       * broadcasts it to every other connected client (demo-scale — the
+       * relay has no reverse contact graph to scope this to just our
+       * contacts). No-ops silently when offline; local state stays the
+       * source of truth for our own UI either way. */
+      function pushMyStatus() {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          const { myNote, myStory } = get();
+          socket.send(JSON.stringify({ type: "status_update", note: myNote, story: myStory }));
         }
       }
 
@@ -406,6 +438,9 @@ export const useChatStore = create<ChatState>()(
         callEndedReason: null,
         myStory: null,
         myNote: null,
+        onlineIds: new Set(),
+        notesByContact: {},
+        storiesByContact: {},
 
         ensureIdentity: async () => {
           const existing = get().identity;
@@ -500,11 +535,20 @@ export const useChatStore = create<ChatState>()(
           });
         },
 
-        sendMessage: async (contactId, text, imageDataUrl) => {
+        sendMessage: async (contactId, text, imageDataUrl, audio) => {
           const trimmed = text.trim();
-          if (!trimmed && !imageDataUrl) return;
+          if (!trimmed && !imageDataUrl && !audio) return;
           const msgId = uid("msg");
-          appendMessage(contactId, { id: msgId, direction: "out", text: trimmed, imageDataUrl, at: Date.now(), status: "sending" });
+          appendMessage(contactId, {
+            id: msgId,
+            direction: "out",
+            text: trimmed,
+            imageDataUrl,
+            audioDataUrl: audio?.dataUrl,
+            audioDurationMs: audio?.durationMs,
+            at: Date.now(),
+            status: "sending",
+          });
           const contact = get().contacts.find((c) => c.id === contactId);
           if (contact?.isMock) {
             // Not a real peer — no relay round trip (a fake publicKeyJwk
@@ -515,7 +559,13 @@ export const useChatStore = create<ChatState>()(
           await attemptDeliver(contactId, msgId);
         },
 
-        markRead: (contactId) => set((s) => ({ unreadByContact: { ...s.unreadByContact, [contactId]: 0 } })),
+        markRead: (contactId) => {
+          const hadUnread = (get().unreadByContact[contactId] ?? 0) > 0;
+          set((s) => ({ unreadByContact: { ...s.unreadByContact, [contactId]: 0 } }));
+          if (hadUnread && socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "read", to: contactId, at: Date.now() }));
+          }
+        },
 
         connect: () => {
           if (typeof window === "undefined") return;
@@ -541,6 +591,42 @@ export const useChatStore = create<ChatState>()(
               set({ connectionStatus: "online" });
               flushOutbox();
               reclaimUsernameIfAny();
+              pushMyStatus();
+            } else if (msg.type === "presence_snapshot") {
+              set({ onlineIds: new Set(msg.ids as string[]) });
+            } else if (msg.type === "presence") {
+              set((s) => {
+                const next = new Set(s.onlineIds);
+                if (msg.online) next.add(msg.id as string);
+                else next.delete(msg.id as string);
+                return { onlineIds: next };
+              });
+            } else if (msg.type === "status_snapshot") {
+              const entries = msg.statuses as { id: string; note: NoteItem | null; story: StoryItem | null }[];
+              set((s) => {
+                const notesByContact = { ...s.notesByContact };
+                const storiesByContact = { ...s.storiesByContact };
+                for (const e of entries) {
+                  notesByContact[e.id] = e.note;
+                  storiesByContact[e.id] = e.story;
+                }
+                return { notesByContact, storiesByContact };
+              });
+            } else if (msg.type === "status_update") {
+              const from = msg.from as string;
+              set((s) => ({
+                notesByContact: { ...s.notesByContact, [from]: (msg.note as NoteItem | null) ?? null },
+                storiesByContact: { ...s.storiesByContact, [from]: (msg.story as StoryItem | null) ?? null },
+              }));
+            } else if (msg.type === "read") {
+              const from = msg.from as string;
+              const at = msg.at as number;
+              const msgs = get().messagesByContact[from] ?? [];
+              for (const m of msgs) {
+                if (m.direction === "out" && m.at <= at && (m.status === "delivered" || m.status === "queued_remote")) {
+                  updateMessage(from, m.id, { status: "read" });
+                }
+              }
             } else if (msg.type === "message") {
               void handleIncoming(
                 msg.from as string,
@@ -618,7 +704,7 @@ export const useChatStore = create<ChatState>()(
           };
           ws.onclose = () => {
             if (socket === ws) socket = null;
-            set({ connectionStatus: "offline" });
+            set({ connectionStatus: "offline", onlineIds: new Set() });
             if (reconnectTimer) clearTimeout(reconnectTimer);
             reconnectTimer = setTimeout(() => get().connect(), 2000);
           };
@@ -732,14 +818,24 @@ export const useChatStore = create<ChatState>()(
           set((s) => ({ identity: s.identity ? { ...s.identity, avatarDataUrl: dataUrl } : s.identity }));
           reclaimUsernameIfAny();
         },
-        setMyStory: (dataUrl) => set({ myStory: { dataUrl, createdAt: Date.now() } }),
-        clearMyStory: () => set({ myStory: null }),
+        setMyStory: (dataUrl) => {
+          set({ myStory: { dataUrl, createdAt: Date.now() } });
+          pushMyStatus();
+        },
+        clearMyStory: () => {
+          set({ myStory: null });
+          pushMyStatus();
+        },
         setMyNote: (text, opts) => {
           const trimmed = text.trim().slice(0, 60);
           if (!trimmed) return;
           set({ myNote: { text: trimmed, emoji: opts?.emoji, color: opts?.color, createdAt: Date.now() } });
+          pushMyStatus();
         },
-        clearMyNote: () => set({ myNote: null }),
+        clearMyNote: () => {
+          set({ myNote: null });
+          pushMyStatus();
+        },
       };
     },
     {

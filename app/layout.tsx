@@ -3,6 +3,7 @@ import "./globals.css";
 import BottomNav from "@/components/BottomNav";
 import CallOverlay from "@/components/CallOverlay";
 import ActiveRideBar from "@/components/ActiveRideBar";
+import CartFloatingBar from "@/components/CartFloatingBar";
 
 export const metadata: Metadata = {
   title: "Pocket Concierge",
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </div>
         <BottomNav />
         <ActiveRideBar />
+        <CartFloatingBar />
         <CallOverlay />
       </body>
     </html>

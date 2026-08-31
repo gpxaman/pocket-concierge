@@ -6,7 +6,6 @@ import { ChevronLeft, Search, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import { RESTAURANTS } from "@/lib/data/restaurants";
 import RestaurantCard from "@/components/RestaurantCard";
-import CartFloatingBar from "@/components/CartFloatingBar";
 
 const FILTERS = [
   { id: "rating", label: "Rating 4.0+" },
@@ -85,7 +84,6 @@ export default function FoodPage() {
         )}
       </div>
 
-      <CartFloatingBar />
     </div>
   );
 }

@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ChatMessageE2E, useChatStore } from "@/lib/store/useChatStore";
-import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock, Phone, Video, Paperclip, X } from "lucide-react";
+import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock, Phone, Video, Paperclip, X, Smile } from "lucide-react";
 import clsx from "clsx";
+import EmojiPicker from "@/components/chat/EmojiPicker";
+import VoiceRecorder from "@/components/chat/VoiceRecorder";
+import VoiceBubble from "@/components/chat/VoiceBubble";
 
 // Stable reference: `?? []` inline in a selector would allocate a new array
 // every render, which makes useSyncExternalStore think the snapshot changed
@@ -26,11 +29,31 @@ export default function ConversationPage() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const call = useChatStore((s) => s.call);
   const startCall = useChatStore((s) => s.startCall);
+  const onlineIds = useChatStore((s) => s.onlineIds);
+  const isOnline = onlineIds.has(contactId);
 
   const [input, setInput] = useState("");
   const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function insertEmoji(emoji: string) {
+    const el = inputRef.current;
+    if (el && document.activeElement === el) {
+      const start = el.selectionStart ?? input.length;
+      const end = el.selectionEnd ?? input.length;
+      const next = input.slice(0, start) + emoji + input.slice(end);
+      setInput(next);
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(start + emoji.length, start + emoji.length);
+      });
+    } else {
+      setInput((v) => v + emoji);
+    }
+  }
 
   function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -88,9 +111,13 @@ export default function ConversationPage() {
         )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-ink">@{contact.username}</p>
-          <p className="inline-flex items-center gap-1 text-[11px] text-ink/40">
-            <Lock size={9} /> End-to-end encrypted · {connectionStatus}
-          </p>
+          {isOnline ? (
+            <p className="text-[11px] font-medium text-accentDark">online</p>
+          ) : (
+            <p className="inline-flex items-center gap-1 text-[11px] text-ink/40">
+              <Lock size={9} /> End-to-end encrypted · {connectionStatus}
+            </p>
+          )}
         </div>
         <button
           onClick={() => startCall(contactId, "audio")}
@@ -126,11 +153,19 @@ export default function ConversationPage() {
               >
                 {m.imageDataUrl && (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={m.imageDataUrl} alt="" className={clsx("max-h-64 rounded-lg object-cover", m.text && "mb-2")} />
+                  <img src={m.imageDataUrl} alt="" className={clsx("max-h-64 rounded-lg object-cover", (m.text || m.audioDataUrl) && "mb-2")} />
+                )}
+                {m.audioDataUrl && (
+                  <VoiceBubble dataUrl={m.audioDataUrl} durationMs={m.audioDurationMs} tone={m.direction === "out" ? "out" : "in"} />
                 )}
                 {m.text}
                 {m.direction === "out" && (
                   <span className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-ink/45">
+                    {m.status === "read" && (
+                      <>
+                        <CheckCheck size={11} className="text-accentDark" /> <span className="text-accentDark">read</span>
+                      </>
+                    )}
                     {m.status === "delivered" && (
                       <>
                         <CheckCheck size={11} /> delivered
@@ -170,38 +205,57 @@ export default function ConversationPage() {
         </div>
       )}
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!input.trim() && !pendingImage) return;
-          void sendMessage(contactId, input, pendingImage ?? undefined);
-          setInput("");
-          setPendingImage(null);
-        }}
-        className="mx-4 mb-3 flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 shadow-sm"
-      >
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 hover:text-ink"
-          title="Attach an image"
+      {showEmojiPicker && <EmojiPicker onPick={insertEmoji} onClose={() => setShowEmojiPicker(false)} />}
+
+      <div className="mx-4 mb-3 flex items-center gap-2">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!input.trim() && !pendingImage) return;
+            void sendMessage(contactId, input, pendingImage ?? undefined);
+            setInput("");
+            setPendingImage(null);
+            setShowEmojiPicker(false);
+          }}
+          className="flex flex-1 items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 shadow-sm"
         >
-          <Paperclip size={16} />
-        </button>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Message…"
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-ink/35"
-        />
-        <button
-          type="submit"
-          disabled={!input.trim() && !pendingImage}
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-ink transition disabled:opacity-30"
-        >
-          <Send size={15} />
-        </button>
-      </form>
+          <button
+            type="button"
+            onClick={() => setShowEmojiPicker((v) => !v)}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 hover:text-ink"
+            title="Emoji"
+          >
+            <Smile size={17} />
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 hover:text-ink"
+            title="Attach an image"
+          >
+            <Paperclip size={16} />
+          </button>
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onFocus={() => setShowEmojiPicker(false)}
+            placeholder="Message…"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-ink/35"
+          />
+          {(input.trim() || pendingImage) && (
+            <button
+              type="submit"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-ink transition"
+            >
+              <Send size={15} />
+            </button>
+          )}
+        </form>
+        {!input.trim() && !pendingImage && (
+          <VoiceRecorder onSend={(dataUrl, durationMs) => void sendMessage(contactId, "", undefined, { dataUrl, durationMs })} />
+        )}
+      </div>
     </div>
   );
 }

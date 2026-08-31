@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { NOTE_COLORS, NOTE_EMOJIS, NOTE_TTL_MS, STORY_TTL_MS, noteColor, useChatStore } from "@/lib/store/useChatStore";
-import { ChevronLeft, Trash2, Lock, UserCircle2, Check, Plus, X, Camera, Image as ImageIcon, Phone, Video, UserPlus } from "lucide-react";
+import { NOTE_COLORS, NOTE_EMOJIS, NOTE_TTL_MS, STORY_TTL_MS, noteColor, StoryItem, useChatStore } from "@/lib/store/useChatStore";
+import { ChevronLeft, Trash2, Lock, UserCircle2, Check, Plus, X, Camera, Image as ImageIcon, UserPlus } from "lucide-react";
 import clsx from "clsx";
 
 export default function ChatIndexPage() {
@@ -17,8 +17,9 @@ export default function ChatIndexPage() {
   const ensureIdentity = useChatStore((s) => s.ensureIdentity);
   const removeContact = useChatStore((s) => s.removeContact);
   const connect = useChatStore((s) => s.connect);
-  const startCall = useChatStore((s) => s.startCall);
-  const call = useChatStore((s) => s.call);
+  const onlineIds = useChatStore((s) => s.onlineIds);
+  const notesByContact = useChatStore((s) => s.notesByContact);
+  const storiesByContact = useChatStore((s) => s.storiesByContact);
 
   const myStory = useChatStore((s) => s.myStory);
   const myNote = useChatStore((s) => s.myNote);
@@ -29,6 +30,7 @@ export default function ChatIndexPage() {
 
   const [showStorySheet, setShowStorySheet] = useState(false);
   const [showStoryViewer, setShowStoryViewer] = useState(false);
+  const [viewingContactStory, setViewingContactStory] = useState<{ username: string; story: StoryItem } | null>(null);
   const [showNoteInput, setShowNoteInput] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [noteEmoji, setNoteEmoji] = useState<string | undefined>(undefined);
@@ -167,19 +169,52 @@ export default function ChatIndexPage() {
           <span className="text-[10px] text-ink/50">Your story</span>
         </div>
 
-        {contacts.map((c) => (
-          <Link key={c.id} href={`/chat/${c.id}`} className="flex shrink-0 flex-col items-center gap-1.5">
-            <div className="mt-[26px] flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-black/5">
-              {c.avatarDataUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={c.avatarDataUrl} alt="" className="h-full w-full object-cover" />
-              ) : (
-                <span className="text-sm font-semibold text-ink/50">{c.username.slice(0, 1).toUpperCase()}</span>
+        {contacts.map((c) => {
+          const contactStory = storiesByContact[c.id];
+          const contactStoryActive = Boolean(contactStory && Date.now() - contactStory.createdAt < STORY_TTL_MS);
+          const contactNote = notesByContact[c.id];
+          const contactNoteActive = Boolean(contactNote && Date.now() - contactNote.createdAt < NOTE_TTL_MS);
+          return (
+            <div key={c.id} className="flex shrink-0 flex-col items-center gap-1.5">
+              {contactNoteActive && contactNote && (
+                <div
+                  className="max-w-[90px] truncate rounded-2xl rounded-bl-sm px-2.5 py-1 text-[10px] shadow-sm"
+                  style={{
+                    background: `linear-gradient(135deg, ${noteColor(contactNote.color).from}, ${noteColor(contactNote.color).to})`,
+                    color: noteColor(contactNote.color).text,
+                  }}
+                >
+                  {contactNote.emoji && <span className="mr-1">{contactNote.emoji}</span>}
+                  {contactNote.text}
+                </div>
               )}
+              <button
+                onClick={() => (contactStoryActive && contactStory ? setViewingContactStory({ username: c.username, story: contactStory }) : router.push(`/chat/${c.id}`))}
+                className={clsx(!contactNoteActive && "mt-[26px]", "relative")}
+              >
+                <div
+                  className={clsx(
+                    "flex h-14 w-14 items-center justify-center rounded-full p-0.5",
+                    contactStoryActive ? "bg-gradient-to-br from-accent to-[#c98f00]" : ""
+                  )}
+                >
+                  <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-black/5">
+                    {c.avatarDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={c.avatarDataUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-sm font-semibold text-ink/50">{c.username.slice(0, 1).toUpperCase()}</span>
+                    )}
+                  </div>
+                </div>
+                {onlineIds.has(c.id) && (
+                  <span className="absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-paper" />
+                )}
+              </button>
+              <span className="max-w-[56px] truncate text-[10px] text-ink/50">{c.username}</span>
             </div>
-            <span className="max-w-[56px] truncate text-[10px] text-ink/50">{c.username}</span>
-          </Link>
-        ))}
+          );
+        })}
       </div>
 
       <p className="mt-5 text-xs font-semibold uppercase tracking-wide text-ink/40">Chats</p>
@@ -194,24 +229,36 @@ export default function ChatIndexPage() {
             const msgs = messagesByContact[c.id] ?? [];
             const last = msgs[msgs.length - 1];
             const unread = unreadByContact[c.id] ?? 0;
-            const lastPreview = last ? (last.imageDataUrl && !last.text ? "📷 Photo" : last.text) : "No messages yet";
+            const lastPreview = last
+              ? last.audioDataUrl
+                ? "🎤 Voice message"
+                : last.imageDataUrl && !last.text
+                  ? "📷 Photo"
+                  : last.text
+              : "No messages yet";
+            const lastIsMineRead = last?.direction === "out" && last.status === "read";
             return (
               <div key={c.id} className="flex items-center gap-2">
                 <Link
                   href={`/chat/${c.id}`}
                   className="flex flex-1 items-center gap-3 rounded-xl2 border border-black/5 bg-white p-3 shadow-sm hover:border-accentDark/40"
                 >
-                  {c.avatarDataUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.avatarDataUrl} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover" />
-                  ) : (
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accentSoft text-sm font-semibold text-accentDark">
-                      {c.username.slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
+                  <span className="relative shrink-0">
+                    {c.avatarDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={c.avatarDataUrl} alt="" className="h-10 w-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accentSoft text-sm font-semibold text-accentDark">
+                        {c.username.slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
+                    {onlineIds.has(c.id) && (
+                      <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                    )}
+                  </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-ink">@{c.username}</p>
-                    <p className="truncate text-xs text-ink/45">{lastPreview}</p>
+                    <p className={clsx("truncate text-xs", lastIsMineRead ? "text-accentDark" : "text-ink/45")}>{lastPreview}</p>
                   </div>
                   {unread > 0 && (
                     <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-ink">
@@ -219,28 +266,6 @@ export default function ChatIndexPage() {
                     </span>
                   )}
                 </Link>
-                <button
-                  onClick={(e) => {
-                    e.preventDefault();
-                    startCall(c.id, "audio");
-                  }}
-                  disabled={!!call || connectionStatus !== "online"}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink/40 hover:bg-accentSoft hover:text-accentDark disabled:opacity-30"
-                  title="Voice call"
-                >
-                  <Phone size={16} />
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.preventDefault();
-                    startCall(c.id, "video");
-                  }}
-                  disabled={!!call || connectionStatus !== "online"}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink/40 hover:bg-accentSoft hover:text-accentDark disabled:opacity-30"
-                  title="Video call"
-                >
-                  <Video size={16} />
-                </button>
                 <button
                   onClick={() => removeContact(c.id)}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink/30 hover:text-red-500"
@@ -324,6 +349,26 @@ export default function ChatIndexPage() {
                   <X size={14} />
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewingContactStory && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/90 p-6" onClick={() => setViewingContactStory(null)}>
+          <div className="relative w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={viewingContactStory.story.dataUrl} alt={`@${viewingContactStory.username}'s story`} className="w-full rounded-xl2" />
+            <div className="mt-3 flex items-center justify-between">
+              <p className="text-xs text-white/60">
+                @{viewingContactStory.username} · {new Date(viewingContactStory.story.createdAt).toLocaleString()}
+              </p>
+              <button
+                onClick={() => setViewingContactStory(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              >
+                <X size={14} />
+              </button>
             </div>
           </div>
         </div>

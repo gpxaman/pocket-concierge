@@ -6,7 +6,6 @@ import { ChevronLeft, Search, Sparkles, Zap } from "lucide-react";
 import { GROCERY_CATEGORIES, GROCERY_CATEGORY_ICON } from "@/lib/data/groceryCategories";
 import { byCategory, groceryByCategory } from "@/lib/data/catalog";
 import ProductCard from "@/components/ProductCard";
-import CartFloatingBar from "@/components/CartFloatingBar";
 
 export default function GroceryPage() {
   const [query, setQuery] = useState("");
@@ -98,7 +97,6 @@ export default function GroceryPage() {
         </>
       )}
 
-      <CartFloatingBar />
     </div>
   );
 }
