@@ -8,8 +8,7 @@ import { TIERS, tierForPoints, nextTier, progressToNextTier } from "@/lib/loyalt
 import FilterEditor from "@/components/FilterEditor";
 import { filterToCss } from "@/lib/filters";
 import AccordionSection from "@/components/AccordionSection";
-import ActivityList from "@/components/ActivityList";
-import PaymentsPanel from "@/components/PaymentsPanel";
+import NavRow from "@/components/NavRow";
 import {
   Trash2,
   ShieldAlert,
@@ -135,23 +134,21 @@ export default function ProfilePage() {
       <p className="text-xs font-medium uppercase tracking-wide text-accentDark">You</p>
       <h1 className="mt-1 text-2xl font-semibold text-ink">Profile</h1>
 
-      <div className="mt-4 flex items-center gap-3 rounded-xl2 border border-black/5 bg-white p-4 shadow-sm">
-        <div
-          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white"
-          style={{ background: `linear-gradient(135deg, ${tier.colorFrom}, ${tier.colorTo})` }}
-        >
+      {/* Fully tier-colored, matching the Rewards section's "current tier"
+          box below — so which tier you're in is obvious at a glance here
+          too, not just after opening Rewards. */}
+      <div
+        className="mt-4 flex items-center gap-3 rounded-xl2 p-4 text-white shadow-sm"
+        style={{ background: `linear-gradient(135deg, ${tier.colorFrom}, ${tier.colorTo})` }}
+      >
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white/20 text-lg font-bold text-white backdrop-blur-sm">
           {(displayName || "?").slice(0, 1).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-base font-semibold text-ink">{displayName || "Add your name"}</p>
-          <p className="truncate text-xs text-ink/45">{identity?.username ? `@${identity.username}` : "No username set"}</p>
+          <p className="truncate text-base font-semibold text-white">{displayName || "Add your name"}</p>
+          <p className="truncate text-xs text-white/70">{identity?.username ? `@${identity.username}` : "No username set"}</p>
         </div>
-        <span
-          className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold text-white"
-          style={{ background: `linear-gradient(135deg, ${tier.colorFrom}, ${tier.colorTo})` }}
-        >
-          {tier.label}
-        </span>
+        <span className="shrink-0 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-bold text-white">{tier.label}</span>
       </div>
 
       <div className="mt-4 space-y-2.5">
@@ -303,25 +300,8 @@ export default function ProfilePage() {
           </div>
         </AccordionSection>
 
-        <AccordionSection
-          icon={ListChecks}
-          title="Activity"
-          subtitle="Orders, bookings & rides"
-          open={openSection === "activity"}
-          onToggle={() => toggle("activity")}
-        >
-          <ActivityList />
-        </AccordionSection>
-
-        <AccordionSection
-          icon={Wallet}
-          title="Payments"
-          subtitle="Balance, cards & history"
-          open={openSection === "payments"}
-          onToggle={() => toggle("payments")}
-        >
-          <PaymentsPanel />
-        </AccordionSection>
+        <NavRow href="/activity" icon={ListChecks} title="Activity" subtitle="Orders, bookings & rides" />
+        <NavRow href="/wallet" icon={Wallet} title="Payments" subtitle="Balance, cards & history" />
 
         <AccordionSection
           icon={SlidersHorizontal}

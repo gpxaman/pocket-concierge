@@ -901,7 +901,11 @@ export default function HomeAgent() {
         </div>
       )}
 
-      {(phase === "listening" || phase === "speaking") && caption && (
+      {/* Only shown while listening — it's useful live feedback for what
+          you're saying, but the AI's own reply already appears in the
+          transcript above, so repeating it as a caption while it speaks
+          is just noise. */}
+      {phase === "listening" && caption && (
         <div className="relative z-10 px-8 pb-1 text-center text-sm text-white/70">{caption}</div>
       )}
 
