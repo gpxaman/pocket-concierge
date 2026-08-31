@@ -56,7 +56,17 @@ export interface Envelope {
 }
 
 function bufToBase64(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+  // Spreading the whole byte array into String.fromCharCode's arguments is
+  // fine for short text messages, but an image payload (a few hundred KB)
+  // blows past the JS engine's function-argument-count ceiling and throws —
+  // chunk it so this works for any payload size.
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 function base64ToBuf(b64: string): ArrayBuffer {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;

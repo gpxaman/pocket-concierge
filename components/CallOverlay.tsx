@@ -101,11 +101,15 @@ export default function CallOverlay() {
               {call.kind === "audio" && <audio ref={remoteAudioRef} autoPlay />}
 
               <div className="relative flex flex-1 flex-col items-center justify-center gap-4 px-8 text-white">
-                {(call.kind === "audio" || call.phase !== "active") && (
-                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-accentSoft text-3xl font-semibold text-accentDark">
-                    {(contact?.username ?? "?").slice(0, 1).toUpperCase()}
-                  </div>
-                )}
+                {(call.kind === "audio" || call.phase !== "active") &&
+                  (contact?.avatarDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={contact.avatarDataUrl} alt="" className="h-24 w-24 rounded-full object-cover" />
+                  ) : (
+                    <div className="flex h-24 w-24 items-center justify-center rounded-full bg-accentSoft text-3xl font-semibold text-accentDark">
+                      {(contact?.username ?? "?").slice(0, 1).toUpperCase()}
+                    </div>
+                  ))}
 
                 <div className="text-center">
                   <p className="text-lg font-semibold">@{contact?.username ?? "unknown"}</p>

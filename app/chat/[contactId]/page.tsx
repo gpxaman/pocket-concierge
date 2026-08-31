@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ChatMessageE2E, useChatStore } from "@/lib/store/useChatStore";
-import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock, Phone, Video } from "lucide-react";
+import { ChevronLeft, Send, Lock, Check, CheckCheck, Clock, Phone, Video, Paperclip, X } from "lucide-react";
 import clsx from "clsx";
 
 // Stable reference: `?? []` inline in a selector would allocate a new array
@@ -28,7 +28,20 @@ export default function ConversationPage() {
   const startCall = useChatStore((s) => s.startCall);
 
   const [input, setInput] = useState("");
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") setPendingImage(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }
 
   useEffect(() => {
     (async () => {
@@ -65,9 +78,14 @@ export default function ConversationPage() {
         <button onClick={() => router.push("/chat")} className="text-ink/50 hover:text-ink">
           <ChevronLeft size={20} />
         </button>
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accentSoft text-sm font-semibold text-accentDark">
-          {contact.username.slice(0, 1).toUpperCase()}
-        </div>
+        {contact.avatarDataUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={contact.avatarDataUrl} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover" />
+        ) : (
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accentSoft text-sm font-semibold text-accentDark">
+            {contact.username.slice(0, 1).toUpperCase()}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-ink">@{contact.username}</p>
           <p className="inline-flex items-center gap-1 text-[11px] text-ink/40">
@@ -106,6 +124,10 @@ export default function ConversationPage() {
                   m.direction === "out" ? "bg-accent text-ink" : "bg-white text-ink shadow-sm"
                 )}
               >
+                {m.imageDataUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={m.imageDataUrl} alt="" className={clsx("max-h-64 rounded-lg object-cover", m.text && "mb-2")} />
+                )}
                 {m.text}
                 {m.direction === "out" && (
                   <span className="mt-0.5 flex items-center justify-end gap-1 text-[10px] text-ink/45">
@@ -132,15 +154,40 @@ export default function ConversationPage() {
         )}
       </div>
 
+      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelected} />
+
+      {pendingImage && (
+        <div className="mx-4 mb-2 flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 shadow-sm">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={pendingImage} alt="Selected" className="h-10 w-10 rounded-lg object-cover" />
+          <span className="flex-1 text-xs text-ink/50">Image attached — will send with your next message</span>
+          <button
+            onClick={() => setPendingImage(null)}
+            className="flex h-6 w-6 items-center justify-center rounded-full bg-black/5 text-ink/60 hover:bg-black/10"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!input.trim()) return;
-          void sendMessage(contactId, input);
+          if (!input.trim() && !pendingImage) return;
+          void sendMessage(contactId, input, pendingImage ?? undefined);
           setInput("");
+          setPendingImage(null);
         }}
         className="mx-4 mb-3 flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 shadow-sm"
       >
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink/50 hover:text-ink"
+          title="Attach an image"
+        >
+          <Paperclip size={16} />
+        </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -149,7 +196,7 @@ export default function ConversationPage() {
         />
         <button
           type="submit"
-          disabled={!input.trim()}
+          disabled={!input.trim() && !pendingImage}
           className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-ink transition disabled:opacity-30"
         >
           <Send size={15} />

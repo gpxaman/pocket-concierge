@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { useSnapStore } from "@/lib/store/useSnapStore";
 import { useChatStore } from "@/lib/store/useChatStore";
@@ -8,6 +8,8 @@ import { TIERS, tierForPoints, nextTier, progressToNextTier } from "@/lib/loyalt
 import FilterEditor from "@/components/FilterEditor";
 import { filterToCss } from "@/lib/filters";
 import AccordionSection from "@/components/AccordionSection";
+import ActivityList from "@/components/ActivityList";
+import PaymentsPanel from "@/components/PaymentsPanel";
 import {
   Trash2,
   ShieldAlert,
@@ -17,6 +19,8 @@ import {
   LogOut,
   User,
   Award,
+  ListChecks,
+  Wallet,
   SlidersHorizontal,
   Brain,
   Settings,
@@ -69,10 +73,13 @@ export default function ProfilePage() {
   const claimUsername = useChatStore((s) => s.claimUsername);
   const ensureIdentity = useChatStore((s) => s.ensureIdentity);
   const connect = useChatStore((s) => s.connect);
+  const setOwnPhone = useChatStore((s) => s.setOwnPhone);
+  const setOwnAvatar = useChatStore((s) => s.setOwnAvatar);
 
   const [openSection, setOpenSection] = useState<string | null>("account");
   const [usernameInput, setUsernameInput] = useState("");
   const [editingUsername, setEditingUsername] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [prefKey, setPrefKey] = useState("");
   const [prefValue, setPrefValue] = useState("");
   const [memoryFact, setMemoryFact] = useState("");
@@ -97,6 +104,17 @@ export default function ProfilePage() {
 
   function toggle(id: string) {
     setOpenSection((cur) => (cur === id ? null : id));
+  }
+
+  function handleAvatarSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") setOwnAvatar(reader.result);
+    };
+    reader.readAsDataURL(file);
   }
 
   async function handleSetUsername(e: React.FormEvent) {
@@ -144,7 +162,25 @@ export default function ProfilePage() {
           open={openSection === "account"}
           onToggle={() => toggle("account")}
         >
-          <label className="text-xs font-semibold uppercase tracking-wide text-ink/40">What should I call you?</label>
+          <div className="flex items-center gap-3">
+            <button onClick={() => avatarInputRef.current?.click()} className="group relative shrink-0" title="Change photo">
+              {identity?.avatarDataUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={identity.avatarDataUrl} alt="" className="h-14 w-14 rounded-full object-cover" />
+              ) : (
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accentSoft text-lg font-semibold text-accentDark">
+                  {(displayName || "?").slice(0, 1).toUpperCase()}
+                </div>
+              )}
+              <span className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-white ring-2 ring-white">
+                <Pencil size={10} />
+              </span>
+            </button>
+            <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarSelected} />
+            <p className="text-[11px] text-ink/40">Prototype placeholder — tap to pick a photo from your device.</p>
+          </div>
+
+          <label className="mt-5 block text-xs font-semibold uppercase tracking-wide text-ink/40">What should I call you?</label>
           <input
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
@@ -198,6 +234,18 @@ export default function ProfilePage() {
                 <Check size={10} /> Signed in as @{identity.username}
               </p>
             )}
+          </div>
+
+          <div className="mt-5">
+            <label className="text-xs font-semibold uppercase tracking-wide text-ink/40">Phone number</label>
+            <p className="mt-0.5 text-[11px] text-ink/40">Shown to contacts you add — lets us build smarter features later.</p>
+            <input
+              type="tel"
+              value={identity?.phone ?? ""}
+              onChange={(e) => setOwnPhone(e.target.value)}
+              placeholder="+91 98765 43210"
+              className="mt-1.5 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-accentDark"
+            />
           </div>
         </AccordionSection>
 
@@ -253,6 +301,26 @@ export default function ProfilePage() {
               </div>
             ))}
           </div>
+        </AccordionSection>
+
+        <AccordionSection
+          icon={ListChecks}
+          title="Activity"
+          subtitle="Orders, bookings & rides"
+          open={openSection === "activity"}
+          onToggle={() => toggle("activity")}
+        >
+          <ActivityList />
+        </AccordionSection>
+
+        <AccordionSection
+          icon={Wallet}
+          title="Payments"
+          subtitle="Balance, cards & history"
+          open={openSection === "payments"}
+          onToggle={() => toggle("payments")}
+        >
+          <PaymentsPanel />
         </AccordionSection>
 
         <AccordionSection

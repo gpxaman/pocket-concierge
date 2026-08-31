@@ -1,27 +1,41 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useSnapStore } from "@/lib/store/useSnapStore";
 import { BUILTIN_PRESETS, filterToCss } from "@/lib/filters";
-import { FilterSettings, Snap } from "@/lib/types";
-import { Camera, CameraOff, Trash2, X } from "lucide-react";
+import { FilterSettings } from "@/lib/types";
+import { Camera, CameraOff, Images } from "lucide-react";
 import clsx from "clsx";
+import SnapReviewScreen from "@/components/snap/SnapReviewScreen";
+import MemoriesScreen from "@/components/snap/MemoriesScreen";
 
 type NamedFilter = FilterSettings & { id: string; name: string };
+type Step = "camera" | "review" | "memories";
 
 export default function SnapPage() {
+  // useSearchParams needs a Suspense boundary at build time — see AGENTS.md.
+  return (
+    <Suspense fallback={null}>
+      <SnapPageInner />
+    </Suspense>
+  );
+}
+
+function SnapPageInner() {
+  const searchParams = useSearchParams();
+  const forStory = searchParams.get("for") === "story";
+
   const creatorFilters = useSnapStore((s) => s.filters);
-  const snaps = useSnapStore((s) => s.snaps);
-  const addSnap = useSnapStore((s) => s.addSnap);
-  const deleteSnap = useSnapStore((s) => s.deleteSnap);
 
   const allFilters: NamedFilter[] = [...BUILTIN_PRESETS, ...creatorFilters];
   const [selectedId, setSelectedId] = useState(allFilters[0].id);
   const selected = allFilters.find((f) => f.id === selectedId) ?? allFilters[0];
 
   const [permission, setPermission] = useState<"pending" | "granted" | "denied">("pending");
-  const [justCaptured, setJustCaptured] = useState<string | null>(null);
-  const [preview, setPreview] = useState<Snap | null>(null);
+  const [justCaptured, setJustCaptured] = useState(false);
+  const [step, setStep] = useState<Step>("camera");
+  const [pendingCapture, setPendingCapture] = useState<{ dataUrl: string; filterName: string } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -66,15 +80,53 @@ export default function SnapPage() {
     ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-    addSnap(dataUrl, selected.name);
-    setJustCaptured(dataUrl);
-    setTimeout(() => setJustCaptured(null), 900);
+    setJustCaptured(true);
+    window.setTimeout(() => setJustCaptured(false), 250);
+    setPendingCapture({ dataUrl, filterName: selected.name });
+    setStep("review");
+  }
+
+  if (step === "review" && pendingCapture) {
+    return (
+      <SnapReviewScreen
+        dataUrl={pendingCapture.dataUrl}
+        filterName={pendingCapture.filterName}
+        forStory={forStory}
+        onClose={() => {
+          setPendingCapture(null);
+          setStep("camera");
+        }}
+      />
+    );
+  }
+
+  if (step === "memories") {
+    return (
+      <MemoriesScreen
+        onBack={() => setStep("camera")}
+        onPick={(dataUrl) => {
+          setPendingCapture({ dataUrl, filterName: "Camera Roll" });
+          setStep("review");
+        }}
+      />
+    );
   }
 
   return (
     <div className="px-5 pt-6 pb-8">
-      <p className="text-xs font-medium uppercase tracking-wide text-accentDark">Camera</p>
-      <h1 className="mt-1 text-2xl font-semibold text-ink">Snap</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-accentDark">{forStory ? "Add to your story" : "Camera"}</p>
+          <h1 className="mt-1 text-2xl font-semibold text-ink">Snap</h1>
+        </div>
+        <button
+          onClick={() => setStep("memories")}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/5 text-ink/60 hover:bg-black/10"
+          title="Memories"
+        >
+          <Images size={19} />
+        </button>
+      </div>
 
       <div className="relative mt-4 aspect-[3/4] w-full overflow-hidden rounded-xl2 bg-ink">
         {permission === "denied" && (
@@ -93,9 +145,7 @@ export default function SnapPage() {
             style={{ filter: filterToCss(selected) }}
           />
         )}
-        {justCaptured && (
-          <div className="pointer-events-none absolute inset-0 bg-white/80 transition-opacity" />
-        )}
+        {justCaptured && <div className="pointer-events-none absolute inset-0 bg-white/80 transition-opacity" />}
         {permission === "pending" && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-white/50">Starting camera…</div>
         )}
@@ -126,53 +176,6 @@ export default function SnapPage() {
           <Camera size={26} className="text-ink" />
         </button>
       </div>
-
-      {snaps.length > 0 && (
-        <div className="mt-6">
-          <p className="mb-2 text-sm font-semibold text-ink/70">Your snaps</p>
-          <div className="grid grid-cols-3 gap-2">
-            {snaps.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setPreview(s)}
-                className="group relative aspect-square overflow-hidden rounded-lg bg-ink/5"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={s.dataUrl} alt={s.filterName} className="h-full w-full object-cover" />
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {preview && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/80 p-6" onClick={() => setPreview(null)}>
-          <div className="relative w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={preview.dataUrl} alt={preview.filterName} className="w-full rounded-xl2" />
-            <div className="mt-3 flex items-center justify-between">
-              <p className="text-xs text-white/60">{preview.filterName} · {new Date(preview.createdAt).toLocaleString()}</p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    deleteSnap(preview.id);
-                    setPreview(null);
-                  }}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-                >
-                  <Trash2 size={14} />
-                </button>
-                <button
-                  onClick={() => setPreview(null)}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

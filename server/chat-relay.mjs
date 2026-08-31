@@ -29,7 +29,7 @@ const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 const clients = new Map();
 /** @type {Map<string, object[]>} queued frames, by recipient id */
 const queues = new Map();
-/** @type {Map<string, {id: string, username: string, publicKeyJwk: object}>} directory, keyed by lowercased username */
+/** @type {Map<string, {id: string, username: string, publicKeyJwk: object, phone?: string, avatarDataUrl?: string}>} directory, keyed by lowercased username */
 const usernames = new Map();
 
 const wss = new WebSocketServer({ port: PORT, host: "0.0.0.0" });
@@ -88,7 +88,15 @@ wss.on("connection", (ws) => {
         send(ws, { type: "username_taken", username, reason: "taken" });
         return;
       }
-      usernames.set(key, { id: selfId, username, publicKeyJwk: msg.publicKeyJwk });
+      // phone/avatarDataUrl are optional display-only profile fields — never
+      // used as a lookup key, just carried through so a fresh lookup sees them.
+      usernames.set(key, {
+        id: selfId,
+        username,
+        publicKeyJwk: msg.publicKeyJwk,
+        phone: typeof msg.phone === "string" ? msg.phone : undefined,
+        avatarDataUrl: typeof msg.avatarDataUrl === "string" ? msg.avatarDataUrl : undefined,
+      });
       send(ws, { type: "username_ok", username });
       return;
     }
@@ -103,6 +111,8 @@ wss.on("connection", (ws) => {
           id: entry.id,
           username: entry.username,
           publicKeyJwk: entry.publicKeyJwk,
+          phone: entry.phone,
+          avatarDataUrl: entry.avatarDataUrl,
         });
       } else {
         send(ws, { type: "lookup_result", query: msg.username, found: false });

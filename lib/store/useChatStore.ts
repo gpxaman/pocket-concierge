@@ -14,6 +14,9 @@ export interface ChatContact {
   username: string;
   publicKeyJwk: JsonWebKey;
   addedAt: number;
+  /** Display-only for now — not a second lookup key. */
+  phone?: string;
+  avatarDataUrl?: string;
 }
 
 export type ChatMessageStatus = "sending" | "delivered" | "queued_remote" | "queued_local" | "received";
@@ -22,6 +25,8 @@ export interface ChatMessageE2E {
   id: string;
   direction: "in" | "out";
   text: string;
+  /** An image attached to this message (e.g. a Snap sent to a contact). */
+  imageDataUrl?: string;
   at: number;
   status: ChatMessageStatus;
 }
@@ -31,7 +36,20 @@ interface ChatIdentity {
   username: string | null;
   publicKeyJwk: JsonWebKey;
   privateKeyJwk: JsonWebKey;
+  phone?: string;
+  avatarDataUrl?: string;
 }
+
+export interface StoryItem {
+  dataUrl: string;
+  createdAt: number;
+}
+export interface NoteItem {
+  text: string;
+  createdAt: number;
+}
+export const STORY_TTL_MS = 24 * 60 * 60 * 1000;
+export const NOTE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type UsernameStatus = "unset" | "checking" | "set" | "taken" | "invalid";
 type ClaimResult = { ok: true } | { ok: false; reason: "invalid" | "taken" | "offline" };
@@ -58,15 +76,25 @@ interface ChatState {
   connectionStatus: "connecting" | "online" | "offline";
   call: CallState | null;
   callEndedReason: string | null;
+  /** Local-only for now — not broadcast to contacts (the relay has no presence/fan-out yet). */
+  myStory: StoryItem | null;
+  myNote: NoteItem | null;
 
   ensureIdentity: () => Promise<ChatIdentity>;
   claimUsername: (username: string) => Promise<ClaimResult>;
   addContactByUsername: (username: string) => Promise<AddContactResult>;
   removeContact: (id: string) => void;
-  sendMessage: (contactId: string, text: string) => Promise<void>;
+  sendMessage: (contactId: string, text: string, imageDataUrl?: string) => Promise<void>;
   markRead: (contactId: string) => void;
   connect: () => void;
   disconnect: () => void;
+
+  setOwnPhone: (phone: string) => void;
+  setOwnAvatar: (dataUrl: string) => void;
+  setMyStory: (dataUrl: string) => void;
+  clearMyStory: () => void;
+  setMyNote: (text: string) => void;
+  clearMyNote: () => void;
 
   startCall: (contactId: string, kind: CallKind) => Promise<void>;
   acceptCall: () => Promise<void>;
@@ -85,7 +113,12 @@ let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const sharedKeyCache = new Map<string, CryptoKey>();
 let pendingUsernameClaim: { resolve: (r: ClaimResult) => void } | null = null;
-const pendingLookups = new Map<string, { resolve: (r: { found: boolean; id?: string; username?: string; publicKeyJwk?: JsonWebKey }) => void }>();
+const pendingLookups = new Map<
+  string,
+  {
+    resolve: (r: { found: boolean; id?: string; username?: string; publicKeyJwk?: JsonWebKey; phone?: string; avatarDataUrl?: string }) => void;
+  }
+>();
 
 let peerConnection: RTCPeerConnection | null = null;
 let localStream: MediaStream | null = null;
@@ -149,16 +182,22 @@ export const useChatStore = create<ChatState>()(
         }));
       }
 
-      async function attemptDeliver(contactId: string, msgId: string, text: string) {
+      // Looks the message up from state (rather than taking text/image as
+      // params) so a retry from flushOutbox and a fresh send both encrypt
+      // the exact same {text, imageDataUrl} payload from one source of truth.
+      async function attemptDeliver(contactId: string, msgId: string) {
         const contact = get().contacts.find((c) => c.id === contactId);
         if (!contact) return;
+        const msg = (get().messagesByContact[contactId] ?? []).find((m) => m.id === msgId);
+        if (!msg) return;
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           updateMessage(contactId, msgId, { status: "queued_local" });
           return;
         }
         const sharedKey = await getSharedKey(contact);
         if (!sharedKey) return;
-        const envelope = await encryptMessage(sharedKey, text);
+        const payload = JSON.stringify({ text: msg.text, imageDataUrl: msg.imageDataUrl });
+        const envelope = await encryptMessage(sharedKey, payload);
         updateMessage(contactId, msgId, { status: "sending" });
         socket.send(JSON.stringify({ type: "send", to: contactId, envelope, msgId }));
       }
@@ -168,7 +207,7 @@ export const useChatStore = create<ChatState>()(
         for (const [contactId, msgs] of Object.entries(messagesByContact)) {
           for (const m of msgs) {
             if (m.direction === "out" && m.status === "queued_local") {
-              void attemptDeliver(contactId, m.id, m.text);
+              void attemptDeliver(contactId, m.id);
             }
           }
         }
@@ -177,11 +216,20 @@ export const useChatStore = create<ChatState>()(
       // The relay's username directory is in-memory and resets if it
       // restarts. Re-claiming on every (re)connect is idempotent when we
       // still own the name, and makes that recoverable without the user
-      // noticing.
+      // noticing. Also republishes the latest phone/avatar so a lookup
+      // after a profile edit sees current values.
       function reclaimUsernameIfAny() {
         const identity = get().identity;
         if (identity?.username && socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "claim_username", username: identity.username, publicKeyJwk: identity.publicKeyJwk }));
+          socket.send(
+            JSON.stringify({
+              type: "claim_username",
+              username: identity.username,
+              publicKeyJwk: identity.publicKeyJwk,
+              phone: identity.phone,
+              avatarDataUrl: identity.avatarDataUrl,
+            })
+          );
         }
       }
 
@@ -197,8 +245,19 @@ export const useChatStore = create<ChatState>()(
         const sharedKey = await getSharedKey(contact);
         if (!sharedKey) return;
         try {
-          const text = await decryptMessage(sharedKey, envelope);
-          appendMessage(from, { id: msgId, direction: "in", text, at: ts, status: "received" });
+          const decrypted = await decryptMessage(sharedKey, envelope);
+          // Payload is JSON ({text, imageDataUrl}) — fall back to treating it
+          // as plain text if it's not (e.g. an older message shape).
+          let text = decrypted;
+          let imageDataUrl: string | undefined;
+          try {
+            const parsed = JSON.parse(decrypted) as { text?: string; imageDataUrl?: string };
+            text = parsed.text ?? "";
+            imageDataUrl = parsed.imageDataUrl;
+          } catch {
+            // not JSON — treat the whole thing as plain text
+          }
+          appendMessage(from, { id: msgId, direction: "in", text, imageDataUrl, at: ts, status: "received" });
           set((s) => ({ unreadByContact: { ...s.unreadByContact, [from]: (s.unreadByContact[from] ?? 0) + 1 } }));
         } catch (err) {
           console.warn("[chat] failed to decrypt incoming message", err);
@@ -269,6 +328,8 @@ export const useChatStore = create<ChatState>()(
         connectionStatus: "offline",
         call: null,
         callEndedReason: null,
+        myStory: null,
+        myNote: null,
 
         ensureIdentity: async () => {
           const existing = get().identity;
@@ -292,7 +353,15 @@ export const useChatStore = create<ChatState>()(
           set({ usernameStatus: "checking" });
           const result = await new Promise<ClaimResult>((resolve) => {
             pendingUsernameClaim = { resolve };
-            socket!.send(JSON.stringify({ type: "claim_username", username, publicKeyJwk: identity.publicKeyJwk }));
+            socket!.send(
+              JSON.stringify({
+                type: "claim_username",
+                username,
+                publicKeyJwk: identity.publicKeyJwk,
+                phone: identity.phone,
+                avatarDataUrl: identity.avatarDataUrl,
+              })
+            );
           });
 
           if (result.ok) {
@@ -310,12 +379,17 @@ export const useChatStore = create<ChatState>()(
           if (!identity) return { ok: false, reason: "offline" };
           if (!socket || socket.readyState !== WebSocket.OPEN) return { ok: false, reason: "offline" };
 
-          const result = await new Promise<{ found: boolean; id?: string; username?: string; publicKeyJwk?: JsonWebKey }>(
-            (resolve) => {
-              pendingLookups.set(username.toLowerCase(), { resolve });
-              socket!.send(JSON.stringify({ type: "lookup", username }));
-            }
-          );
+          const result = await new Promise<{
+            found: boolean;
+            id?: string;
+            username?: string;
+            publicKeyJwk?: JsonWebKey;
+            phone?: string;
+            avatarDataUrl?: string;
+          }>((resolve) => {
+            pendingLookups.set(username.toLowerCase(), { resolve });
+            socket!.send(JSON.stringify({ type: "lookup", username }));
+          });
 
           if (!result.found || !result.id || !result.publicKeyJwk) return { ok: false, reason: "not_found" };
           if (result.id === identity.id) return { ok: false, reason: "self" };
@@ -326,6 +400,8 @@ export const useChatStore = create<ChatState>()(
             username: result.username ?? username,
             publicKeyJwk: result.publicKeyJwk,
             addedAt: existing?.addedAt ?? Date.now(),
+            phone: result.phone,
+            avatarDataUrl: result.avatarDataUrl,
           };
           sharedKeyCache.delete(contact.id);
           set((s) => ({
@@ -347,12 +423,12 @@ export const useChatStore = create<ChatState>()(
           });
         },
 
-        sendMessage: async (contactId, text) => {
+        sendMessage: async (contactId, text, imageDataUrl) => {
           const trimmed = text.trim();
-          if (!trimmed) return;
+          if (!trimmed && !imageDataUrl) return;
           const msgId = uid("msg");
-          appendMessage(contactId, { id: msgId, direction: "out", text: trimmed, at: Date.now(), status: "sending" });
-          await attemptDeliver(contactId, msgId, trimmed);
+          appendMessage(contactId, { id: msgId, direction: "out", text: trimmed, imageDataUrl, at: Date.now(), status: "sending" });
+          await attemptDeliver(contactId, msgId);
         },
 
         markRead: (contactId) => set((s) => ({ unreadByContact: { ...s.unreadByContact, [contactId]: 0 } })),
@@ -406,7 +482,14 @@ export const useChatStore = create<ChatState>()(
               pendingLookups.delete(key);
               pending?.resolve(
                 msg.found
-                  ? { found: true, id: msg.id as string, username: msg.username as string, publicKeyJwk: msg.publicKeyJwk as JsonWebKey }
+                  ? {
+                      found: true,
+                      id: msg.id as string,
+                      username: msg.username as string,
+                      publicKeyJwk: msg.publicKeyJwk as JsonWebKey,
+                      phone: msg.phone as string | undefined,
+                      avatarDataUrl: msg.avatarDataUrl as string | undefined,
+                    }
                   : { found: false }
               );
             } else if (msg.type === "call-offer") {
@@ -549,6 +632,23 @@ export const useChatStore = create<ChatState>()(
         },
 
         clearCallEndedReason: () => set({ callEndedReason: null }),
+
+        setOwnPhone: (phone) => {
+          set((s) => ({ identity: s.identity ? { ...s.identity, phone: phone.trim() } : s.identity }));
+          reclaimUsernameIfAny();
+        },
+        setOwnAvatar: (dataUrl) => {
+          set((s) => ({ identity: s.identity ? { ...s.identity, avatarDataUrl: dataUrl } : s.identity }));
+          reclaimUsernameIfAny();
+        },
+        setMyStory: (dataUrl) => set({ myStory: { dataUrl, createdAt: Date.now() } }),
+        clearMyStory: () => set({ myStory: null }),
+        setMyNote: (text) => {
+          const trimmed = text.trim().slice(0, 60);
+          if (!trimmed) return;
+          set({ myNote: { text: trimmed, createdAt: Date.now() } });
+        },
+        clearMyNote: () => set({ myNote: null }),
       };
     },
     {
@@ -559,6 +659,8 @@ export const useChatStore = create<ChatState>()(
         contacts: s.contacts,
         messagesByContact: s.messagesByContact,
         unreadByContact: s.unreadByContact,
+        myStory: s.myStory,
+        myNote: s.myNote,
       }),
     }
   )
