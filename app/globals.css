@@ -77,7 +77,7 @@ body {
   0% { transform: scale(0.75); opacity: 0.45; }
   100% { transform: scale(2.1); opacity: 0; }
 }
-.voice-ring { animation: ring-expand 2.2s ease-out infinite; border: 1.5px solid rgba(245, 197, 24, 0.55); }
+.voice-ring { animation: ring-expand 2.2s ease-out infinite; border: 1.5px solid rgba(159, 208, 245, 0.55); }
 
 /* Organic "cloud" orb — layered blurred blobs drifting independently, so it
    reads as a soft living shape rather than a flat disc. */

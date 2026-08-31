@@ -2,16 +2,21 @@
 
 import { useEffect, useRef } from "react";
 import { motion, useMotionValue, useSpring } from "framer-motion";
-import { Mic, MicOff, Loader2, Volume2, Zap } from "lucide-react";
 import clsx from "clsx";
 
 export type OrbPhase = "idle" | "listening" | "processing" | "speaking" | "interrupted" | "error" | "denied";
 
 /**
- * The ChatGPT-style voice orb: layered blurred "cloud" blobs instead of a
- * flat disc. Reactivity is honest about what browser APIs can actually do —
- * genuinely audio-reactive while listening (a real AnalyserNode on the mic
- * stream). Speaking can't be driven by real amplitude the same way (browser
+ * The real ChatGPT-voice-mode orb: a crisp circle with a soft, hazy cloud
+ * texture CONTAINED inside it — no icon, no glow bleeding past the edge.
+ * The previous version blurred its cloud layers without clipping them,
+ * which let the haze spill outside the circle instead of reading as
+ * "cloud inside a clean orb." Fixed by wrapping the layers in their own
+ * `overflow-hidden rounded-full` boundary.
+ *
+ * Reactivity is honest about what browser APIs can actually do — genuinely
+ * audio-reactive while listening (a real AnalyserNode on the mic stream).
+ * Speaking can't be driven by real amplitude the same way (browser
  * SpeechSynthesis doesn't expose its output audio) so it's driven instead by
  * `utter.onboundary` events bumping a decaying energy value each frame —
  * same rAF-loop shape as listening, just fed by word/sentence boundaries
@@ -129,8 +134,6 @@ export default function VoiceOrb({
     energyRef.current = Math.min(energyRef.current + 0.16 + Math.random() * 0.1, 0.32);
   }, [phase, speakEnergyToken]);
 
-  const PhaseIcon =
-    phase === "processing" ? Loader2 : phase === "speaking" ? Volume2 : phase === "interrupted" ? Zap : muted ? MicOff : Mic;
   const size = big ? "h-32 w-32" : "h-11 w-11";
   const reactive = phase === "listening" || phase === "speaking";
 
@@ -148,30 +151,23 @@ export default function VoiceOrb({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className={clsx(
-          "relative flex items-center justify-center rounded-full",
+          "relative overflow-hidden rounded-full bg-[#0a1622] transition-[filter] duration-300",
           size,
-          phase === "interrupted" && "voice-orb-interrupt"
+          phase === "interrupted" && "voice-orb-interrupt",
+          muted && "grayscale opacity-60"
         )}
       >
-        {/* layered blurred cloud blobs */}
+        {/* Cloud layers — clipped to the circle by the parent's overflow-hidden, so the haze reads as "inside the orb" rather than a glow bleeding past its edge. */}
         <span
           className={clsx(
-            "absolute inset-0 rounded-full bg-gradient-to-br from-accent via-[#ffe27a] to-[#c98f00] blur-lg",
+            "absolute -inset-2 bg-gradient-to-br from-white via-[#9fd0f5] to-[#1f5f9e] blur-lg",
             phase === "idle" && "voice-orb-idle cloud-layer-1",
             phase === "processing" && "voice-orb-processing",
             phase === "speaking" && "cloud-speaking"
           )}
         />
-        <span
-          className={clsx(
-            "absolute inset-[10%] rounded-full bg-gradient-to-tr from-[#ffe27a] via-accent to-[#c98f00] opacity-90 blur-md cloud-layer-2"
-          )}
-        />
-        {(phase === "error" || errorFlavor) && (
-          <span className="voice-orb-error absolute inset-0 rounded-full bg-red-500 blur-lg" />
-        )}
-        <span className="absolute inset-[22%] rounded-full bg-gradient-to-br from-accent to-[#c98f00] shadow-[0_0_40px_rgba(245,197,24,0.35)]" />
-        <PhaseIcon size={big ? 30 : 16} className={clsx("relative z-10 text-ink", phase === "processing" && "animate-spin")} />
+        <span className="absolute -inset-2 bg-gradient-to-tr from-[#dff3ff] via-[#6fb3e6] to-[#144a80] opacity-80 blur-md cloud-layer-2" />
+        {(phase === "error" || errorFlavor) && <span className="voice-orb-error absolute -inset-2 bg-red-500 blur-lg" />}
       </motion.button>
     </div>
   );

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Keyboard, Send, RotateCcw, ShoppingBag, Sparkles, Paperclip, X } from "lucide-react";
+import { Mic, MicOff, Keyboard, Send, RotateCcw, ShoppingBag, Sparkles, Paperclip, X, Info, Share2, SlidersHorizontal, Check, Volume2 } from "lucide-react";
 import clsx from "clsx";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { AiChatSSEEvent, ChatMessage } from "@/lib/types";
@@ -73,6 +73,8 @@ export default function HomeAgent() {
   const walletBalance = useAppStore((s) => s.walletBalance);
   const placeOrderFromCart = useAppStore((s) => s.placeOrderFromCart);
   const bookHotel = useAppStore((s) => s.bookHotel);
+  const personalizationEnabled = useAppStore((s) => s.personalizationEnabled);
+  const memory = useAppStore((s) => s.memory);
 
   const [started, setStarted] = useState(chatMessages.length > 0);
   const [phase, setPhase] = useState<OrbPhase>("idle");
@@ -86,6 +88,11 @@ export default function HomeAgent() {
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [speakEnergyToken, setSpeakEnergyToken] = useState(0);
+  const [showInfo, setShowInfo] = useState(false);
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string | null>(null);
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const mutedRef = useRef(false);
@@ -126,6 +133,62 @@ export default function HomeAgent() {
   }, [chatMessages, loading]);
 
   useEffect(() => stopEverything, []);
+
+  // Voice list loads asynchronously in most browsers (empty on first call),
+  // so listen for onvoiceschanged too, not just call it once. The chosen
+  // voice persists across sessions in localStorage — no need for a full
+  // store field for a browser-local preference like this.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    setSelectedVoiceURI(window.localStorage.getItem("pc-voice-uri"));
+    const loadVoices = () => setVoices(window.speechSynthesis.getVoices());
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+  }, []);
+
+  function chooseVoice(uri: string | null) {
+    setSelectedVoiceURI(uri);
+    if (typeof window !== "undefined") {
+      if (uri) window.localStorage.setItem("pc-voice-uri", uri);
+      else window.localStorage.removeItem("pc-voice-uri");
+    }
+  }
+
+  function applyVoice(utter: SpeechSynthesisUtterance) {
+    const voice = selectedVoiceURI ? voices.find((v) => v.voiceURI === selectedVoiceURI) : undefined;
+    if (voice) utter.voice = voice;
+  }
+
+  /** A standalone preview, deliberately outside the conversation's speak()/queue machinery — just a quick sample, not a real turn. */
+  function previewVoice(voice: SpeechSynthesisVoice) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance("Hi, this is how I sound.");
+    utter.voice = voice;
+    utter.rate = 1.02;
+    window.speechSynthesis.speak(utter);
+  }
+
+  async function handleShareTranscript() {
+    const text = chatMessages.map((m) => `${m.role === "user" ? "You" : "Concierge"}: ${m.content}`).join("\n");
+    if (!text) return;
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ text, title: "Pocket Concierge conversation" });
+      } catch {
+        // user dismissed the share sheet — fine
+      }
+    } else if (typeof navigator !== "undefined" && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setShareCopied(true);
+        window.setTimeout(() => setShareCopied(false), 2000);
+      } catch {
+        // clipboard unavailable — fine, this is a nice-to-have
+      }
+    }
+  }
 
   function clearVoiceTimers() {
     if (silenceTimerRef.current) {
@@ -323,6 +386,7 @@ export default function HomeAgent() {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1.02;
+    applyVoice(utter);
     utter.onboundary = () => setSpeakEnergyToken((t) => t + 1);
     utter.onend = () => {
       setErrorFlavor(false);
@@ -351,6 +415,7 @@ export default function HomeAgent() {
     queuePlayingRef.current = true;
     const utter = new SpeechSynthesisUtterance(next);
     utter.rate = 1.02;
+    applyVoice(utter);
     utter.onboundary = () => setSpeakEnergyToken((t) => t + 1);
     const advance = () => {
       queuePlayingRef.current = false;
@@ -678,35 +743,48 @@ export default function HomeAgent() {
                   : "Tap the orb to talk";
 
   return (
+    <>
     <div className="fixed inset-x-0 top-0 bottom-20 z-10 mx-auto flex max-w-md flex-col overflow-hidden bg-gradient-to-b from-[#171106] via-[#0e0a03] to-black">
-      <div className="orb orb-a h-40 w-40 bg-accent" style={{ top: "-3rem", left: "-2rem" }} />
-      <div className="orb orb-b h-32 w-32 bg-[#ffe27a]" style={{ top: "1rem", right: "-2.5rem" }} />
-      <div className="orb orb-c h-28 w-28 bg-white" style={{ bottom: "-2.5rem", left: "40%" }} />
+      <div className="orb orb-a h-40 w-40 bg-[#1f5f9e] opacity-30" style={{ top: "-3rem", left: "-2rem" }} />
+      <div className="orb orb-b h-32 w-32 bg-[#9fd0f5] opacity-20" style={{ top: "1rem", right: "-2.5rem" }} />
+      <div className="orb orb-c h-28 w-28 bg-white opacity-10" style={{ bottom: "-2.5rem", left: "40%" }} />
 
       {started && (
         <div className="relative z-10 flex items-center justify-between px-4 pt-4">
-          <VoiceOrb
-            big={false}
-            phase={phase}
-            muted={muted}
-            onTap={handleOrbTap}
-            micStream={micStream}
-            speakEnergyToken={speakEnergyToken}
-            errorFlavor={errorFlavor}
-          />
-          <p className="flex-1 truncate px-3 text-center text-xs text-white/45">{hint}</p>
-          <button
-            onClick={resetConversation}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white/70 hover:bg-white/20"
-            title="Start over"
-          >
-            <RotateCcw size={15} />
-          </button>
+          <p className="flex-1 truncate pr-2 text-xs text-white/45">{hint}</p>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={() => setShowInfo(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-white/70 hover:bg-white/10"
+              title="Info"
+            >
+              <Info size={17} />
+            </button>
+            <button
+              onClick={handleShareTranscript}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-white/70 hover:bg-white/10"
+              title="Share"
+            >
+              <Share2 size={17} />
+            </button>
+            <button
+              onClick={() => setShowVoicePicker(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-white/70 hover:bg-white/10"
+              title="Change voice"
+            >
+              <SlidersHorizontal size={17} />
+            </button>
+          </div>
         </div>
       )}
 
-      {!started ? (
-        <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-7 px-8">
+      {/* The orb is always the dominant visual element — before starting it
+          fills the whole available space (centered, like ChatGPT's own
+          voice-mode screen); once a conversation is running it shrinks to a
+          persistent "hero" strip above the scrolling transcript, so it never
+          disappears from view the way a header-only mini orb would. */}
+      <div className={clsx("relative z-10 flex flex-col items-center justify-center gap-4 px-8", !started ? "flex-1" : "shrink-0 pb-2 pt-1")}>
+        {!started && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -716,17 +794,19 @@ export default function HomeAgent() {
             <Sparkles size={12} className="text-accent" />
             POCKET CONCIERGE
           </motion.div>
+        )}
 
-          <VoiceOrb
-            big
-            phase={phase}
-            muted={muted}
-            onTap={handleOrbTap}
-            micStream={micStream}
-            speakEnergyToken={speakEnergyToken}
-            errorFlavor={errorFlavor}
-          />
+        <VoiceOrb
+          big={!started}
+          phase={phase}
+          muted={muted}
+          onTap={handleOrbTap}
+          micStream={micStream}
+          speakEnergyToken={speakEnergyToken}
+          errorFlavor={errorFlavor}
+        />
 
+        {!started && (
           <div className="text-center">
             <p className="text-lg font-medium text-white">
               {displayName ? `Hi ${displayName}, ` : "Hi, "}
@@ -736,8 +816,10 @@ export default function HomeAgent() {
               I can find things, compare options, and place the order once you say go.
             </p>
           </div>
-        </div>
-      ) : (
+        )}
+      </div>
+
+      {started && (
         <div ref={scrollRef} className="relative z-10 flex-1 space-y-3 overflow-y-auto px-4 pb-2 pt-1">
           <AnimatePresence initial={false}>
             {chatMessages.map((m) => (
@@ -903,5 +985,90 @@ export default function HomeAgent() {
         </button>
       </div>
     </div>
+
+    {showInfo && (
+        <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={() => setShowInfo(false)}>
+          <div className="mx-auto w-full max-w-md rounded-t-2xl bg-[#171106] p-5 pb-8 text-white" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-semibold">About this conversation</p>
+            <div className="mt-3 space-y-2 text-xs text-white/60">
+              <p>Personalization: {personalizationEnabled ? "On" : "Off"}</p>
+              <p>Remembered facts: {memory.length}</p>
+              <p>Messages this session: {chatMessages.length}</p>
+              {!supported && <p className="text-amber-300/80">Voice input isn't supported in this browser — use the keyboard.</p>}
+            </div>
+            <button
+              onClick={() => {
+                resetConversation();
+                setShowInfo(false);
+              }}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-white/10 py-2.5 text-sm font-medium text-white/85 hover:bg-white/15"
+            >
+              <RotateCcw size={14} /> Start over
+            </button>
+            <button onClick={() => setShowInfo(false)} className="mt-2 flex w-full items-center justify-center py-2 text-xs text-white/40">
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showVoicePicker && (
+        <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={() => setShowVoicePicker(false)}>
+          <div className="mx-auto max-h-[70vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-[#171106] p-5 pb-8 text-white" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-semibold">Choose a voice</p>
+            <p className="mt-0.5 text-xs text-white/40">Uses your browser's built-in voices — tap one to preview it.</p>
+            {voices.length === 0 ? (
+              <p className="mt-4 text-xs text-white/40">No voices available in this browser yet.</p>
+            ) : (
+              <div className="mt-3 space-y-1">
+                <button
+                  onClick={() => chooseVoice(null)}
+                  className={clsx(
+                    "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm",
+                    !selectedVoiceURI ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5"
+                  )}
+                >
+                  Default
+                  {!selectedVoiceURI && <Check size={15} className="text-accent" />}
+                </button>
+                {voices
+                  .filter((v) => v.lang.startsWith("en"))
+                  .map((v) => (
+                    <button
+                      key={v.voiceURI}
+                      onClick={() => {
+                        chooseVoice(v.voiceURI);
+                        previewVoice(v);
+                      }}
+                      className={clsx(
+                        "flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-sm",
+                        selectedVoiceURI === v.voiceURI ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5"
+                      )}
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {v.name} <span className="text-white/35">· {v.lang}</span>
+                      </span>
+                      {selectedVoiceURI === v.voiceURI ? (
+                        <Check size={15} className="shrink-0 text-accent" />
+                      ) : (
+                        <Volume2 size={14} className="shrink-0 text-white/25" />
+                      )}
+                    </button>
+                  ))}
+              </div>
+            )}
+            <button onClick={() => setShowVoicePicker(false)} className="mt-4 flex w-full items-center justify-center py-2 text-xs text-white/40">
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+    {shareCopied && (
+      <div className="pointer-events-none fixed inset-x-0 top-16 z-50 flex justify-center">
+        <div className="rounded-full bg-white/90 px-4 py-2 text-xs font-semibold text-ink shadow-lg">Copied to clipboard</div>
+      </div>
+    )}
+    </>
   );
 }
