@@ -3,13 +3,16 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
+  ActiveRide,
   AuditRecord,
   CartItem,
   CatalogItem,
   ChatMessage,
+  MapPoint,
   MemoryItem,
   PaymentMethod,
   Preference,
+  RidePhase,
   Transaction,
   TransactionStatus,
 } from "@/lib/types";
@@ -18,7 +21,11 @@ import { cartWithItemAdded, findById } from "@/lib/data/catalog";
 import { priceCart, priceStay, priceRide } from "@/lib/pricing";
 import { pointsForAmount } from "@/lib/loyalty";
 import { findRideType } from "@/lib/data/rideTypes";
-import { Driver, pickDriver } from "@/lib/data/drivers";
+import { Driver } from "@/lib/data/drivers";
+import { SEARCH_BUDGET_MS, generateOtp, pickupEtaMinutes, tripDurationMinutes } from "@/lib/ridesim";
+import type { PaymentSource } from "@/lib/types";
+
+export type { PaymentSource } from "@/lib/types";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -34,9 +41,6 @@ interface LedgerEntry {
   at: number;
 }
 
-/** "wallet" pays from the topped-up balance; any other string is a PaymentMethod id. */
-export type PaymentSource = "wallet" | string;
-
 interface AppState {
   transactions: Transaction[];
   memory: MemoryItem[];
@@ -51,6 +55,8 @@ interface AppState {
   cart: CartItem[];
   /** Lifetime loyalty points — see lib/loyalty.ts for tiers and the earn rate. */
   points: number;
+  /** The single in-flight ride, if any — see lib/ridesim.ts for the matching/timing simulation. */
+  activeRide: ActiveRide | null;
 
   logAudit: (a: Omit<AuditRecord, "id" | "timestamp" | "correlationId"> & { correlationId?: string }) => void;
   addPoints: (amount: number) => void;
@@ -102,13 +108,35 @@ interface AppState {
     | { ok: true; transaction: Transaction }
     | { ok: false; reason: "invalid_dates" | "not_found" | "insufficient_balance" | "no_payment_method" };
 
-  /** Books a ride for a pickup/drop pair — distance-priced, not catalog-priced (see lib/pricing.ts's priceRide). */
-  bookRide: (
-    input: { rideTypeId: string; pickup: string; drop: string; distanceKm: number; source: PaymentSource },
+  /**
+   * Rides run as a real, timestamp-driven state machine rather than a single
+   * instant "book" call — see lib/ridesim.ts for the matching/timing math.
+   * Charge + points are deferred to completeRide() (not request time), so a
+   * cancellation before the ride starts never needs to be reversed.
+   */
+  requestRide: (
+    input: {
+      rideTypeId: string;
+      pickup: string;
+      drop: string;
+      pickupPoint: MapPoint;
+      dropPoint: MapPoint;
+      distanceKm: number;
+      source: PaymentSource;
+    },
     opts?: { placedBy?: "USER" | "AI_AGENT" }
   ) =>
-    | { ok: true; transaction: Transaction; driver: Driver }
-    | { ok: false; reason: "invalid_ride_type" | "insufficient_balance" | "no_payment_method" };
+    | { ok: true; transactionId: string }
+    | { ok: false; reason: "invalid_ride_type" | "insufficient_balance" | "no_payment_method" | "ride_in_progress" };
+  recordOfferRejected: (driverName: string) => void;
+  assignDriver: (driver: Driver, simulatedDistanceKm: number) => void;
+  markEnRoute: () => void;
+  markArrived: () => void;
+  recordSearchFailure: () => void;
+  startTrip: () => void;
+  completeRide: () => void;
+  rateDriver: (stars: number) => void;
+  cancelRide: () => void;
 }
 
 function etaMinutesFor(items: { itemId: string; qty: number }[]): number | undefined {
@@ -120,11 +148,56 @@ function etaMinutesFor(items: { itemId: string; qty: number }[]): number | undef
   return undefined;
 }
 
-const LIFECYCLES: Record<Transaction["type"], TransactionStatus[]> = {
+// RIDE isn't here — its lifecycle is driven by the real matching/timing
+// simulation in requestRide/assignDriver/.../completeRide, not this generic
+// blind status walker (see the ride actions below).
+const LIFECYCLES: Partial<Record<Transaction["type"], TransactionStatus[]>> = {
   ORDER: ["draft", "pending_authorization", "pending_vendor", "in_progress", "completed"],
   BOOKING: ["draft", "pending_authorization", "confirmed", "in_progress", "completed"],
-  RIDE: ["draft", "pending_authorization", "confirmed", "in_progress", "completed"],
 };
+
+function txStatusForPhase(phase: RidePhase): TransactionStatus {
+  switch (phase) {
+    case "searching":
+      return "pending_authorization";
+    case "driver_assigned":
+    case "en_route_to_pickup":
+    case "driver_arrived":
+      return "confirmed";
+    case "in_progress":
+      return "in_progress";
+    case "completed":
+      return "completed";
+    case "cancelled":
+      return "cancelled";
+  }
+}
+
+/**
+ * Syncs the ride's paired Transaction to a phase transition — maps the phase
+ * to a TransactionStatus and only pushes a history entry when that status
+ * actually changed (driver_assigned/en_route_to_pickup/driver_arrived all
+ * map to "confirmed", so most of those transitions are a no-op here).
+ */
+function applyRidePhase(
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => void,
+  phase: RidePhase,
+  extraMeta?: Record<string, string>
+) {
+  const ride = get().activeRide;
+  if (!ride) return;
+  const nextStatus = txStatusForPhase(phase);
+  const now = Date.now();
+  set((s) => ({
+    transactions: s.transactions.map((t) => {
+      if (t.id !== ride.transactionId) return t;
+      const meta = extraMeta ? { ...t.meta, ...extraMeta } : t.meta;
+      if (t.status === nextStatus) return { ...t, meta, updatedAt: now };
+      return { ...t, status: nextStatus, meta, updatedAt: now, history: [...t.history, { status: nextStatus, at: now }] };
+    }),
+  }));
+}
 
 export const useAppStore = create<AppState>()(
   persist(
@@ -141,6 +214,7 @@ export const useAppStore = create<AppState>()(
       displayName: "",
       cart: [],
       points: 0,
+      activeRide: null,
 
       addPoints: (amount) => set((s) => ({ points: s.points + amount })),
 
@@ -286,6 +360,7 @@ export const useAppStore = create<AppState>()(
         const tx = get().transactions.find((t) => t.id === id);
         if (!tx) return;
         const path = LIFECYCLES[tx.type];
+        if (!path) return; // RIDE has its own real state machine — see the ride actions below
         const idx = path.indexOf(tx.status);
         if (idx === -1 || idx >= path.length - 1) return;
         const next = path[idx + 1];
@@ -614,7 +689,12 @@ export const useAppStore = create<AppState>()(
         return { ok: true as const, transaction: tx };
       },
 
-      bookRide: ({ rideTypeId, pickup, drop, distanceKm, source }, opts) => {
+      requestRide: ({ rideTypeId, pickup, drop, pickupPoint, dropPoint, distanceKm, source }, opts) => {
+        const existing = get().activeRide;
+        if (existing && existing.phase !== "completed" && existing.phase !== "cancelled") {
+          return { ok: false as const, reason: "ride_in_progress" as const };
+        }
+
         const rideType = findRideType(rideTypeId);
         if (!rideType) return { ok: false as const, reason: "invalid_ride_type" as const };
 
@@ -641,66 +721,231 @@ export const useAppStore = create<AppState>()(
           sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
         }
 
-        const driver = pickDriver(rideType.id);
         const now = Date.now();
-
         const tx: Transaction = {
           id: uid("txn"),
           type: "RIDE",
-          status: "confirmed",
+          status: "pending_authorization",
           itemId: rideType.id,
           itemTitle: `${rideType.label} · ${pickup} → ${drop}`,
-          providerName: driver.name,
+          providerName: rideType.label,
           amount: total,
           currency: "INR",
           createdAt: now,
           updatedAt: now,
-          meta: {
-            card: sourceLabel,
-            pickup,
-            drop,
-            distanceKm: String(distanceKm),
-            driverName: driver.name,
-            vehicleModel: driver.vehicleModel,
-            vehicleNumber: driver.vehicleNumber,
-            driverRating: String(driver.rating),
-          },
+          meta: { card: sourceLabel, pickup, drop, distanceKm: String(distanceKm) },
           history: [
             { status: "draft", at: now },
-            { status: "confirmed", at: now },
+            { status: "pending_authorization", at: now },
           ],
           etaMinutes: rideType.etaMinutes,
           placedBy: opts?.placedBy ?? "USER",
         };
 
-        set((s) => ({
-          transactions: [tx, ...s.transactions],
-          walletBalance: useWallet ? s.walletBalance - total : s.walletBalance,
-          points: s.points + pointsForAmount(total),
-          ledger: [
-            {
-              id: uid("ledg"),
-              transactionId: tx.id,
-              amount: total,
-              direction: "debit",
-              note: `RIDE · ${rideType.label} (${pickup} → ${drop})`,
-              sourceLabel,
-              at: now,
-            },
-            ...s.ledger,
-          ],
-        }));
+        const ride: ActiveRide = {
+          id: uid("ride"),
+          transactionId: tx.id,
+          phase: "searching",
+          rideTypeId: rideType.id,
+          rideTypeLabel: rideType.label,
+          pickup,
+          drop,
+          pickupPoint,
+          dropPoint,
+          distanceKm,
+          fare: total,
+          source,
+          driver: null,
+          driverDistanceKm: null,
+          otp: null,
+          requestedAt: now,
+          searchDeadlineAt: now + SEARCH_BUDGET_MS,
+          matchedAt: null,
+          pickupEtaAt: null,
+          arrivedAt: null,
+          tripStartedAt: null,
+          tripEtaAt: null,
+          completedAt: null,
+          cancelledAt: null,
+          driverRatingGiven: null,
+          triedDriverNames: [],
+        };
 
+        set((s) => ({ transactions: [tx, ...s.transactions], activeRide: ride }));
         get().logAudit({
-          actorType: "USER",
-          action: "ride_confirmed",
+          actorType: opts?.placedBy === "AI_AGENT" ? "AI_AGENT" : "USER",
+          action: "ride_requested",
           resourceType: "ride",
           resourceId: tx.id,
           policyDecision: "allowed",
-          detail: `User confirmed ₹${total} ${rideType.label} ride (${pickup} to ${drop}) on ${sourceLabel}.`,
+          detail: `Requested a ₹${total} ${rideType.label} ride (${pickup} to ${drop}) on ${sourceLabel}.`,
         });
 
-        return { ok: true as const, transaction: tx, driver };
+        return { ok: true as const, transactionId: tx.id };
+      },
+
+      recordOfferRejected: (driverName) => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "searching") return;
+        set((s) => ({
+          activeRide: s.activeRide && { ...s.activeRide, triedDriverNames: [...s.activeRide.triedDriverNames, driverName] },
+        }));
+      },
+
+      assignDriver: (driver, simulatedDistanceKm) => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "searching") return;
+        set((s) => ({
+          activeRide: s.activeRide && {
+            ...s.activeRide,
+            phase: "driver_assigned",
+            matchedAt: Date.now(),
+            driver,
+            driverDistanceKm: simulatedDistanceKm,
+          },
+        }));
+        applyRidePhase(get, set, "driver_assigned");
+      },
+
+      markEnRoute: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "driver_assigned") return;
+        const now = Date.now();
+        set((s) => ({
+          activeRide: s.activeRide && {
+            ...s.activeRide,
+            phase: "en_route_to_pickup",
+            pickupEtaAt: now + pickupEtaMinutes(ride.driverDistanceKm ?? 2) * 60_000,
+          },
+        }));
+        applyRidePhase(get, set, "en_route_to_pickup");
+      },
+
+      markArrived: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "en_route_to_pickup") return;
+        set((s) => ({
+          activeRide: s.activeRide && {
+            ...s.activeRide,
+            phase: "driver_arrived",
+            arrivedAt: Date.now(),
+            otp: generateOtp(),
+          },
+        }));
+        applyRidePhase(get, set, "driver_arrived");
+      },
+
+      recordSearchFailure: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "searching") return;
+        applyRidePhase(get, set, "cancelled");
+        get().logAudit({
+          actorType: "USER",
+          action: "ride_search_failed",
+          resourceType: "ride",
+          resourceId: ride.transactionId,
+          policyDecision: "allowed",
+          detail: "No nearby drivers accepted the ride within the search window.",
+        });
+        set({ activeRide: null });
+      },
+
+      startTrip: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "driver_arrived") return;
+        const now = Date.now();
+        set((s) => ({
+          activeRide: s.activeRide && {
+            ...s.activeRide,
+            phase: "in_progress",
+            tripStartedAt: now,
+            tripEtaAt: now + tripDurationMinutes(ride.distanceKm) * 60_000,
+          },
+        }));
+        applyRidePhase(get, set, "in_progress");
+      },
+
+      completeRide: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "in_progress") return;
+
+        const useWallet = ride.source === "wallet";
+        let paid = true;
+        let sourceLabel = "Wallet balance";
+        if (useWallet) {
+          paid = get().walletBalance >= ride.fare;
+        } else {
+          const method = get().paymentMethods.find((m) => m.id === ride.source);
+          paid = Boolean(method);
+          if (method) sourceLabel = `${BRAND_LABEL[method.brand]} •••• ${method.last4}`;
+        }
+
+        const now = Date.now();
+        set((s) => ({
+          activeRide: s.activeRide && { ...s.activeRide, phase: "completed", completedAt: now },
+          walletBalance: paid && useWallet ? s.walletBalance - ride.fare : s.walletBalance,
+          points: paid ? s.points + pointsForAmount(ride.fare) : s.points,
+          ledger: paid
+            ? [
+                {
+                  id: uid("ledg"),
+                  transactionId: ride.transactionId,
+                  amount: ride.fare,
+                  direction: "debit" as const,
+                  note: `RIDE · ${ride.rideTypeLabel} (${ride.pickup} → ${ride.drop})`,
+                  sourceLabel,
+                  at: now,
+                },
+                ...s.ledger,
+              ]
+            : s.ledger,
+        }));
+        applyRidePhase(get, set, "completed", paid ? undefined : { paymentIssue: "true" });
+
+        get().logAudit({
+          actorType: "USER",
+          action: paid ? "ride_completed" : "ride_payment_failed",
+          resourceType: "ride",
+          resourceId: ride.transactionId,
+          policyDecision: "allowed",
+          detail: paid
+            ? `Ride completed — charged ₹${ride.fare} on ${sourceLabel}.`
+            : `Ride completed but the payment source was no longer valid — ₹${ride.fare} not captured.`,
+        });
+      },
+
+      rateDriver: (stars) => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase !== "completed") return;
+        set((s) => ({
+          transactions: s.transactions.map((t) =>
+            t.id === ride.transactionId ? { ...t, meta: { ...t.meta, driverRatingGiven: String(stars) } } : t
+          ),
+          activeRide: null,
+        }));
+        get().logAudit({
+          actorType: "USER",
+          action: "ride_rated",
+          resourceType: "ride",
+          resourceId: ride.transactionId,
+          policyDecision: "allowed",
+          detail: `Rider gave ${stars}★ for the ride with ${ride.driver?.name ?? "the driver"}.`,
+        });
+      },
+
+      cancelRide: () => {
+        const ride = get().activeRide;
+        if (!ride || ride.phase === "in_progress" || ride.phase === "completed" || ride.phase === "cancelled") return;
+        applyRidePhase(get, set, "cancelled");
+        set({ activeRide: null });
+        get().logAudit({
+          actorType: "USER",
+          action: "ride_cancelled",
+          resourceType: "ride",
+          resourceId: ride.transactionId,
+          policyDecision: "allowed",
+          detail: "Rider cancelled before the trip started — nothing was charged.",
+        });
       },
     }),
     { name: "pocket-concierge-store", version: 3 }

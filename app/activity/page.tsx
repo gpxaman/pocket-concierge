@@ -5,13 +5,14 @@ import Link from "next/link";
 import { useAppStore, PaymentSource } from "@/lib/store/useAppStore";
 import { BRAND_LABEL } from "@/lib/payments";
 import StatusBadge from "@/components/StatusBadge";
-import { ListChecks, ShieldCheck, X, PlayCircle, Wallet, CreditCard } from "lucide-react";
+import { ListChecks, ShieldCheck, X, PlayCircle, Wallet, CreditCard, Navigation } from "lucide-react";
 import clsx from "clsx";
 
 export default function ActivityPage() {
   const transactions = useAppStore((s) => s.transactions);
   const paymentMethods = useAppStore((s) => s.paymentMethods);
   const walletBalance = useAppStore((s) => s.walletBalance);
+  const activeRide = useAppStore((s) => s.activeRide);
   const authorizeTransaction = useAppStore((s) => s.authorizeTransaction);
   const cancelTransaction = useAppStore((s) => s.cancelTransaction);
   const advanceTransaction = useAppStore((s) => s.advanceTransaction);
@@ -54,7 +55,12 @@ export default function ActivityPage() {
                 </div>
 
                 <p className="mt-2 text-sm font-medium text-ink">₹{t.amount.toLocaleString("en-IN")}</p>
-                {t.meta?.card && <p className="text-xs text-ink/40">Charged to {t.meta.card}</p>}
+                {t.meta?.card && (
+                  <p className="text-xs text-ink/40">
+                    {/* Rides charge on completion, not on request — meta.card is only the chosen source until then. */}
+                    {t.type === "RIDE" && t.status !== "completed" ? "Paying with" : "Charged to"} {t.meta.card}
+                  </p>
+                )}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {t.status === "draft" && confirmingId !== t.id && (
@@ -154,13 +160,23 @@ export default function ActivityPage() {
                     </div>
                   )}
 
-                  {!["draft", "completed", "cancelled"].includes(t.status) && (
-                    <button
-                      onClick={() => advanceTransaction(t.id)}
+                  {t.type === "RIDE" && activeRide?.transactionId === t.id ? (
+                    <Link
+                      href="/explore/rides"
                       className="inline-flex items-center gap-1 rounded-full border border-black/10 px-3 py-1.5 text-xs text-ink/60 hover:border-accentDark hover:text-accentDark"
                     >
-                      <PlayCircle size={13} /> Simulate next step
-                    </button>
+                      <Navigation size={13} /> Track ride
+                    </Link>
+                  ) : (
+                    t.type !== "RIDE" &&
+                    !["draft", "completed", "cancelled"].includes(t.status) && (
+                      <button
+                        onClick={() => advanceTransaction(t.id)}
+                        className="inline-flex items-center gap-1 rounded-full border border-black/10 px-3 py-1.5 text-xs text-ink/60 hover:border-accentDark hover:text-accentDark"
+                      >
+                        <PlayCircle size={13} /> Simulate next step
+                      </button>
+                    )
                   )}
                 </div>
               </div>

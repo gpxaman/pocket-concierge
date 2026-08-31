@@ -67,8 +67,8 @@ export interface RidePriceBreakdown {
 }
 
 // Same discipline again: one function computing what a ride actually costs,
-// used by the ride page's fare estimate, the booking confirmation's bill
-// summary, and useAppStore.bookRide's real charge.
+// used by the request panel's fare estimate, the completion screen's bill
+// summary, and useAppStore.completeRide's real charge.
 export function priceRide(rideType: RideType, distanceKm: number): RidePriceBreakdown {
   const distanceFare = Math.round(rideType.perKm * distanceKm);
   return { baseFare: rideType.baseFare, distanceFare, total: rideType.baseFare + distanceFare };

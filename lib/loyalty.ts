@@ -8,7 +8,7 @@ export interface Tier {
 
 // Lifetime points, 1 point per ₹10 spent on any completed order, booking or
 // ride (charged at the same moment the wallet is debited — see
-// useAppStore's placeOrderFromCart/bookHotel/bookRide).
+// useAppStore's placeOrderFromCart/bookHotel/completeRide).
 export const TIERS: Tier[] = [
   { id: "bronze", label: "Bronze", minPoints: 0, colorFrom: "#b08d57", colorTo: "#6b4a26" },
   { id: "silver", label: "Silver", minPoints: 500, colorFrom: "#c9d1d9", colorTo: "#8b95a1" },

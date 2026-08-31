@@ -34,15 +34,21 @@ export function VehicleMarker({
   y,
   icon: Icon,
   delayMs = 0,
+  animate = false,
 }: {
   x: number;
   y: number;
   icon: LucideIcon;
   delayMs?: number;
+  /** When the caller updates x/y over time (live GPS simulation), glide instead of jumping. */
+  animate?: boolean;
 }) {
   return (
     <div
-      className="absolute -translate-x-1/2 -translate-y-1/2 animate-[fadeInScale_0.4s_ease-out_backwards]"
+      className={clsx(
+        "absolute -translate-x-1/2 -translate-y-1/2 animate-[fadeInScale_0.4s_ease-out_backwards]",
+        animate && "transition-[left,top] duration-1000 ease-linear"
+      )}
       style={{ left: `${x}%`, top: `${y}%`, animationDelay: `${delayMs}ms` }}
     >
       <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white text-accentDark shadow-md ring-1 ring-black/5">

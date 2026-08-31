@@ -2,6 +2,8 @@
 // In a real build these live behind domain services; here they're just
 // typed shapes shared by the mock catalog, the tool layer and the UI.
 
+import type { Driver } from "@/lib/data/drivers";
+
 export type ServiceCategory =
   | "electronics"
   | "food"
@@ -210,31 +212,50 @@ export interface Snap {
 
 // --- Rides (cab booking) + food delivery: shared live-tracking domain ---
 
-export type RidePhase = "searching" | "assigned" | "arrived" | "in_progress" | "completed" | "cancelled";
+/** "wallet" pays from the topped-up balance; any other string is a PaymentMethod id. */
+export type PaymentSource = "wallet" | string;
 
-export interface RideDriver {
-  name: string;
-  vehicle: string;
-  plate: string;
-  rating: number;
+export type RidePhase =
+  | "searching"
+  | "driver_assigned"
+  | "en_route_to_pickup"
+  | "driver_arrived"
+  | "in_progress"
+  | "completed"
+  | "cancelled";
+
+export interface MapPoint {
+  x: number;
+  y: number;
 }
 
 export interface ActiveRide {
   id: string;
   transactionId: string;
   phase: RidePhase;
-  tierName: string;
+  rideTypeId: string;
+  rideTypeLabel: string;
   pickup: string;
-  destination: string;
+  drop: string;
+  pickupPoint: MapPoint;
+  dropPoint: MapPoint;
   distanceKm: number;
   fare: number;
-  driver: RideDriver | null;
-  etaMinutes: number | null;
+  source: PaymentSource;
+  driver: Driver | null;
+  driverDistanceKm: number | null;
+  otp: string | null;
   requestedAt: number;
+  searchDeadlineAt: number | null;
+  matchedAt: number | null;
+  pickupEtaAt: number | null;
   arrivedAt: number | null;
-  startedAt: number | null;
+  tripStartedAt: number | null;
+  tripEtaAt: number | null;
   completedAt: number | null;
-  driverRating: number | null;
+  cancelledAt: number | null;
+  driverRatingGiven: number | null;
+  triedDriverNames: string[];
 }
 
 export type FoodOrderPhase = "placed" | "preparing" | "assigned" | "picked_up" | "delivered" | "cancelled";
