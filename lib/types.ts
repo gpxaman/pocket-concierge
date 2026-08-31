@@ -179,6 +179,31 @@ export interface ChatMessage {
   imageDataUrl?: string;
 }
 
+// --- AI chat streaming protocol (app/api/ai/chat/route.ts <-> HomeAgent.tsx) ---
+
+/**
+ * Server->client events over the AI chat SSE stream. Only Anthropic/Gemini's
+ * turn-0 (before any tool call) emits `speech_delta` — this is the ONLY case
+ * structurally guaranteed safe to speak live, since finalizeReply's
+ * money-moving-tool override can never apply when zero tools ran. Any tool
+ * call anywhere in the request means a `retract` (if streaming had started)
+ * followed eventually by `done` with the authoritative, fully-verified text.
+ */
+export type AiChatSSEEvent =
+  | { type: "speech_delta"; text: string }
+  | { type: "retract" }
+  | {
+      type: "done";
+      /** true = the client already spoke this live via speech_delta chunks and must not speak `reply` again. */
+      spoken: boolean;
+      reply: string;
+      itemIds: string[];
+      mode: string;
+      cart: CartItem[];
+      orderResult: Record<string, unknown> | null;
+      hotelBooking: Record<string, unknown> | null;
+    };
+
 // --- Snap (camera + filters) + creator registration ---
 
 export interface FilterSettings {

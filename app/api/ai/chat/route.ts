@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { GoogleGenAI, Content as GeminiContent, FunctionDeclaration } from "@google/genai";
+import { GoogleGenAI, Content as GeminiContent, FunctionCall, FunctionDeclaration } from "@google/genai";
 import {
   AI_TOOLS,
   describeCartState,
@@ -15,8 +15,13 @@ import {
   HotelBookingPreview,
 } from "@/lib/ai/tools";
 import { runFallbackAgent } from "@/lib/ai/fallback";
-import { CartItem, ChatMessage } from "@/lib/types";
+import { AiChatSSEEvent, CartItem, ChatMessage } from "@/lib/types";
 import { findById } from "@/lib/data/catalog";
+
+/** Formats one Server-Sent Event line. Every provider path funnels through this — see POST. */
+function sseLine(event: AiChatSSEEvent): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
 
 export const runtime = "nodejs";
 
@@ -201,7 +206,13 @@ function extractBase64(dataUrl: string): { mimeType: string; data: string } | nu
   return { mimeType: match[1], data: match[2] };
 }
 
-async function runAnthropic(messages: ChatMessage[], apiKey: string, context: RequestContext, image?: PendingImageInput) {
+async function runAnthropic(
+  messages: ChatMessage[],
+  apiKey: string,
+  context: RequestContext,
+  image: PendingImageInput | undefined,
+  emit: (evt: AiChatSSEEvent) => void
+) {
   const client = new Anthropic({ apiKey });
 
   const anthropicMessages: Anthropic.MessageParam[] = messages
@@ -232,17 +243,50 @@ async function runAnthropic(messages: ChatMessage[], apiKey: string, context: Re
   let hotelBooking: ReturnType<typeof executeBookHotel> | null = null;
   let lastHotelPreview: HotelBookingPreview | null = null;
 
+  // Speculative streaming: only turn 0 streams live text to the client, and
+  // only until (if ever) a tool_use block starts — at that point we retract
+  // (the client stops/discards whatever was queued) and every later turn
+  // reverts to a plain non-streaming call, exactly like before. This is
+  // structurally safe because finalizeReply (below) can only override text
+  // when a tool actually ran — if turn 0 never saw one, nothing downstream
+  // can invalidate what was already spoken.
+  let streamedAnyText = false;
+  let retracted = false;
+
   // Bounded tool loop: search/get_item/cart mutations are safe to auto-run;
   // present_recommendations and place_order are terminal. Cap iterations so
   // a misbehaving model can't loop forever against our own API.
   for (let turn = 0; turn < 6; turn++) {
-    const response = await client.messages.create({
-      model: "claude-sonnet-5",
-      max_tokens: 1024,
-      system: buildSystemPrompt({ ...context, cart }),
-      tools: AI_TOOLS as unknown as Anthropic.Tool[],
-      messages: anthropicMessages,
-    });
+    let response: Anthropic.Message;
+    if (turn === 0) {
+      const stream = client.messages.stream({
+        model: "claude-sonnet-5",
+        max_tokens: 1024,
+        system: buildSystemPrompt({ ...context, cart }),
+        tools: AI_TOOLS as unknown as Anthropic.Tool[],
+        messages: anthropicMessages,
+      });
+      stream.on("text", (delta) => {
+        if (retracted) return;
+        streamedAnyText = true;
+        emit({ type: "speech_delta", text: delta });
+      });
+      stream.on("streamEvent", (event) => {
+        if (!retracted && event.type === "content_block_start" && event.content_block.type === "tool_use") {
+          retracted = true;
+          emit({ type: "retract" });
+        }
+      });
+      response = await stream.finalMessage();
+    } else {
+      response = await client.messages.create({
+        model: "claude-sonnet-5",
+        max_tokens: 1024,
+        system: buildSystemPrompt({ ...context, cart }),
+        tools: AI_TOOLS as unknown as Anthropic.Tool[],
+        messages: anthropicMessages,
+      });
+    }
 
     const textBlocks = response.content.filter((b) => b.type === "text") as Anthropic.TextBlock[];
     finalText = textBlocks.map((b) => b.text).join("\n").trim();
@@ -274,7 +318,12 @@ async function runAnthropic(messages: ChatMessage[], apiKey: string, context: Re
   }
 
   finalText = finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "claude" as const, cart, orderResult, hotelBooking };
+  // Safe to treat as "already spoken" only if turn 0 actually streamed text
+  // and was never retracted — retracted staying false means no tool_use
+  // block ever appeared, so finalizeReply structurally could not have
+  // overridden anything above.
+  const spoken = streamedAnyText && !retracted;
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "claude" as const, cart, orderResult, hotelBooking, spoken };
 }
 
 const GEMINI_TOOLS: FunctionDeclaration[] = AI_TOOLS.map((t) => ({
@@ -283,7 +332,13 @@ const GEMINI_TOOLS: FunctionDeclaration[] = AI_TOOLS.map((t) => ({
   parametersJsonSchema: t.input_schema,
 }));
 
-async function runGemini(messages: ChatMessage[], apiKey: string, context: RequestContext, image?: PendingImageInput) {
+async function runGemini(
+  messages: ChatMessage[],
+  apiKey: string,
+  context: RequestContext,
+  image: PendingImageInput | undefined,
+  emit: (evt: AiChatSSEEvent) => void
+) {
   const ai = new GoogleGenAI({ apiKey });
 
   const contents: GeminiContent[] = messages
@@ -309,25 +364,68 @@ async function runGemini(messages: ChatMessage[], apiKey: string, context: Reque
   let hotelBooking: ReturnType<typeof executeBookHotel> | null = null;
   let lastHotelPreview: HotelBookingPreview | null = null;
 
+  // Same speculative-streaming contract as Anthropic — see the comment there.
+  let streamedAnyText = false;
+  let retracted = false;
+
   for (let turn = 0; turn < 6; turn++) {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents,
-      config: {
-        systemInstruction: buildSystemPrompt({ ...context, cart }),
-        tools: [{ functionDeclarations: GEMINI_TOOLS }],
-      },
-    });
+    let text = "";
+    let calls: FunctionCall[] = [];
+    let modelContent: GeminiContent | undefined;
 
-    const text = response.text?.trim();
-    if (text) finalText = text;
+    if (turn === 0) {
+      const stream = await ai.models.generateContentStream({
+        model: "gemini-2.5-flash",
+        contents,
+        config: {
+          systemInstruction: buildSystemPrompt({ ...context, cart }),
+          tools: [{ functionDeclarations: GEMINI_TOOLS }],
+        },
+      });
+      // Each yielded chunk is a DELTA (its own new parts, not a cumulative
+      // snapshot) — accumulate parts in arrival order so `modelContent`
+      // ends up identical in shape to what the non-streaming call below
+      // would have produced, for the tool round-trip history.
+      const accumulatedParts: NonNullable<GeminiContent["parts"]> = [];
+      for await (const chunk of stream) {
+        const chunkParts = chunk.candidates?.[0]?.content?.parts ?? [];
+        for (const part of chunkParts) {
+          accumulatedParts.push(part);
+          if (part.text) {
+            text += part.text;
+            if (!retracted) {
+              streamedAnyText = true;
+              emit({ type: "speech_delta", text: part.text });
+            }
+          }
+          if (part.functionCall) {
+            calls.push(part.functionCall);
+            if (!retracted) {
+              retracted = true;
+              emit({ type: "retract" });
+            }
+          }
+        }
+      }
+      if (accumulatedParts.length > 0) modelContent = { role: "model", parts: accumulatedParts };
+    } else {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents,
+        config: {
+          systemInstruction: buildSystemPrompt({ ...context, cart }),
+          tools: [{ functionDeclarations: GEMINI_TOOLS }],
+        },
+      });
+      text = response.text?.trim() ?? "";
+      calls = response.functionCalls ?? [];
+      modelContent = response.candidates?.[0]?.content;
+    }
 
-    const calls = response.functionCalls ?? [];
+    if (text.trim()) finalText = text.trim();
     if (calls.length === 0) break;
 
     const terminalCall = calls.find((c) => isTerminalTool(c.name ?? ""));
-
-    const modelContent = response.candidates?.[0]?.content;
     if (modelContent) contents.push(modelContent);
 
     const responseParts = calls.map((call) => {
@@ -352,7 +450,8 @@ async function runGemini(messages: ChatMessage[], apiKey: string, context: Reque
   }
 
   finalText = finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "gemini" as const, cart, orderResult, hotelBooking };
+  const spoken = streamedAnyText && !retracted;
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "gemini" as const, cart, orderResult, hotelBooking, spoken };
 }
 
 // OpenRouter free-tier models come and go and get rate-limited fast — don't
@@ -609,7 +708,10 @@ async function runOpenRouter(messages: ChatMessage[], apiKey: string, context: R
   finalText = untrustedActionResponse
     ? "Sorry, I couldn't complete that just now — could you try again?"
     : finalizeReply(finalText, cart, context.cart, orderResult, hotelBooking);
-  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "openrouter" as const, cart, orderResult, hotelBooking };
+  // OpenRouter never streams (no SDK, hand-rolled candidate-retry logic that
+  // needs a complete response before it can decide whether to trust it) —
+  // always the non-streamed, fully-verified path.
+  return { reply: finalText || "Here's what I found.", itemIds: recommendedIds, mode: "openrouter" as const, cart, orderResult, hotelBooking, spoken: false };
 }
 
 export async function POST(req: NextRequest) {
@@ -641,27 +743,72 @@ export async function POST(req: NextRequest) {
     cart: CartItem[];
     orderResult: ReturnType<typeof executePlaceOrder> | null;
     hotelBooking: ReturnType<typeof executeBookHotel> | null;
+    spoken: boolean;
   };
-  const attempts: { name: string; run: () => Promise<ProviderResult> }[] = [];
-  if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext, image) });
-  if (anthropicKey) attempts.push({ name: "Anthropic", run: () => runAnthropic(messages, anthropicKey, normalizedContext, image) });
-  if (openrouterKey) attempts.push({ name: "OpenRouter", run: () => runOpenRouter(messages, openrouterKey, normalizedContext, image) });
 
-  for (const attempt of attempts) {
-    try {
-      return NextResponse.json(await attempt.run());
-    } catch (err) {
-      console.error(`[ai/chat] ${attempt.name} failed, trying next provider:`, err);
-    }
-  }
+  // Single uniform SSE response for every path (streamed or not) — the
+  // client always reads via the same SSE parser, never branches on which
+  // provider answered. Only Gemini/Anthropic's turn-0 ever calls `enqueue`
+  // with a `speech_delta`/`retract` before the final `done`; OpenRouter and
+  // the local fallback go straight to one `done` event, unchanged in effect
+  // from the plain-JSON response this replaced.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let emittedAny = false;
+      const enqueue = (evt: AiChatSSEEvent) => {
+        if (evt.type === "speech_delta" || evt.type === "retract") emittedAny = true;
+        controller.enqueue(encoder.encode(sseLine(evt)));
+      };
 
-  const fallback = runFallbackAgent(messages);
-  return NextResponse.json({
-    reply: fallback.reply,
-    itemIds: fallback.itemIds,
-    mode: "fallback" as const,
-    cart: normalizedContext.cart,
-    orderResult: null,
-    hotelBooking: null,
+      const attempts: { name: string; run: () => Promise<ProviderResult> }[] = [];
+      if (geminiKey) attempts.push({ name: "Gemini", run: () => runGemini(messages, geminiKey, normalizedContext, image, enqueue) });
+      if (anthropicKey) attempts.push({ name: "Anthropic", run: () => runAnthropic(messages, anthropicKey, normalizedContext, image, enqueue) });
+      if (openrouterKey) attempts.push({ name: "OpenRouter", run: () => runOpenRouter(messages, openrouterKey, normalizedContext, image) });
+
+      for (const attempt of attempts) {
+        try {
+          const result = await attempt.run();
+          enqueue({
+            type: "done",
+            spoken: result.spoken,
+            reply: result.reply,
+            itemIds: result.itemIds,
+            mode: result.mode,
+            cart: result.cart,
+            orderResult: result.orderResult,
+            hotelBooking: result.hotelBooking,
+          });
+          controller.close();
+          return;
+        } catch (err) {
+          console.error(`[ai/chat] ${attempt.name} failed, trying next provider:`, err);
+          // This attempt may have already streamed some speech before
+          // failing on a later turn — tell the client to discard it before
+          // falling through to a different provider's answer.
+          if (emittedAny) {
+            enqueue({ type: "retract" });
+            emittedAny = false;
+          }
+        }
+      }
+
+      const fallback = runFallbackAgent(messages);
+      enqueue({
+        type: "done",
+        spoken: false,
+        reply: fallback.reply,
+        itemIds: fallback.itemIds,
+        mode: "fallback",
+        cart: normalizedContext.cart,
+        orderResult: null,
+        hotelBooking: null,
+      });
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" },
   });
 }

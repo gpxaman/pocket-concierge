@@ -73,12 +73,6 @@ body {
 }
 .voice-orb-idle { animation: orb-breathe 3.4s ease-in-out infinite; }
 
-@keyframes orb-spin-slow {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-.voice-orb-spin { animation: orb-spin-slow 6s linear infinite; }
-
 @keyframes ring-expand {
   0% { transform: scale(0.75); opacity: 0.45; }
   100% { transform: scale(2.1); opacity: 0; }
@@ -106,6 +100,35 @@ body {
   75% { transform: scale(1.08); }
 }
 .cloud-speaking { animation: cloud-speak-pulse 1.1s ease-in-out infinite; }
+
+/* Processing — continuous, distinct from both idle breathing and the
+   speaking pulse, so "thinking" never reads as frozen. Reuses the rotation
+   feel orb-spin-slow already established, combined into one keyframe with a
+   gentle scale so it doesn't need two competing `transform` animations. */
+@keyframes orb-processing-pulse {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.045) rotate(180deg); }
+  100% { transform: scale(1) rotate(360deg); }
+}
+.voice-orb-processing { animation: orb-processing-pulse 2.6s ease-in-out infinite; }
+
+/* Interrupted — a quick, visible "snap" the instant barge-in is confirmed,
+   sized to match the ~200ms auto-advance back to listening. */
+@keyframes orb-interrupt-snap {
+  0% { transform: scale(1); filter: brightness(1); }
+  30% { transform: scale(0.86); filter: brightness(1.6); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+.voice-orb-interrupt { animation: orb-interrupt-snap 0.22s ease-out 1; }
+
+/* Error — a muted red tint layered UNDER the normal speaking pulse (never a
+   replacement), so an apology is visually distinguishable without delaying
+   when it starts being spoken. */
+@keyframes orb-error-tint {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.55; }
+}
+.voice-orb-error { animation: orb-error-tint 1.4s ease-in-out infinite; }
 
 @keyframes fadeInScale {
   0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }

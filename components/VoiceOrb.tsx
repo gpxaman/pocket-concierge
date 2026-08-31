@@ -2,18 +2,20 @@
 
 import { useEffect, useRef } from "react";
 import { motion, useMotionValue, useSpring } from "framer-motion";
-import { Mic, MicOff, Loader2, Volume2 } from "lucide-react";
+import { Mic, MicOff, Loader2, Volume2, Zap } from "lucide-react";
 import clsx from "clsx";
 
-export type OrbPhase = "idle" | "listening" | "thinking" | "speaking" | "denied";
+export type OrbPhase = "idle" | "listening" | "processing" | "speaking" | "interrupted" | "error" | "denied";
 
 /**
  * The ChatGPT-style voice orb: layered blurred "cloud" blobs instead of a
  * flat disc. Reactivity is honest about what browser APIs can actually do —
  * genuinely audio-reactive while listening (a real AnalyserNode on the mic
- * stream), a lively but not audio-true pulse while speaking (browser
- * SpeechSynthesis doesn't expose its output audio, so this can't be driven
- * by real amplitude the way listening can).
+ * stream). Speaking can't be driven by real amplitude the same way (browser
+ * SpeechSynthesis doesn't expose its output audio) so it's driven instead by
+ * `utter.onboundary` events bumping a decaying energy value each frame —
+ * same rAF-loop shape as listening, just fed by word/sentence boundaries
+ * instead of mic RMS.
  */
 export default function VoiceOrb({
   big,
@@ -21,17 +23,25 @@ export default function VoiceOrb({
   muted,
   onTap,
   micStream,
+  speakEnergyToken,
+  errorFlavor,
 }: {
   big: boolean;
   phase: OrbPhase;
   muted: boolean;
   onTap: () => void;
   micStream?: MediaStream | null;
+  /** Bumped (any change, including repeats) on each TTS word/sentence boundary — drives the speaking-phase kick. */
+  speakEnergyToken?: number;
+  /** Layers the error tint under whatever's currently rendering (e.g. a spoken apology) without a separate phase/delay. */
+  errorFlavor?: boolean;
 }) {
   const scale = useMotionValue(1);
   const smoothScale = useSpring(scale, { stiffness: 260, damping: 22 });
   const rafRef = useRef<number | null>(null);
 
+  // Listening — real mic amplitude via AnalyserNode, lightly smoothed (EMA)
+  // to avoid frame-to-frame jitter from raw RMS.
   useEffect(() => {
     if (phase !== "listening" || !micStream) {
       scale.set(1);
@@ -41,6 +51,7 @@ export default function VoiceOrb({
     let audioCtx: AudioContext | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
     let cancelled = false;
+    let emaRms = 0;
 
     try {
       const AudioCtxCtor =
@@ -62,7 +73,8 @@ export default function VoiceOrb({
           sumSquares += v * v;
         }
         const rms = Math.sqrt(sumSquares / data.length);
-        scale.set(1 + Math.min(rms * 3.5, 0.4));
+        emaRms = emaRms * 0.7 + rms * 0.3;
+        scale.set(1 + Math.min(emaRms * 3.5, 0.4));
         rafRef.current = requestAnimationFrame(tick);
       };
       tick();
@@ -79,8 +91,48 @@ export default function VoiceOrb({
     };
   }, [phase, micStream, scale]);
 
-  const PhaseIcon = phase === "thinking" ? Loader2 : phase === "speaking" ? Volume2 : muted ? MicOff : Mic;
+  // Speaking — no real output-audio access, so react to word/sentence
+  // boundary events instead: each token bump gives `energy` a (slightly
+  // randomized) kick, which decays every frame — continuous and organic
+  // rather than a hard per-word snap, and never needs a per-word timer.
+  const speakRafRef = useRef<number | null>(null);
+  const energyRef = useRef(0);
+  const lastTokenRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (phase !== "speaking") {
+      scale.set(1);
+      return;
+    }
+    let cancelled = false;
+    energyRef.current = 0;
+    lastTokenRef.current = speakEnergyToken;
+
+    const tick = () => {
+      if (cancelled) return;
+      energyRef.current *= 0.88;
+      scale.set(1 + Math.min(energyRef.current, 0.32));
+      speakRafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (speakRafRef.current) cancelAnimationFrame(speakRafRef.current);
+      scale.set(1);
+    };
+  }, [phase, scale]);
+
+  useEffect(() => {
+    if (phase !== "speaking" || speakEnergyToken === undefined) return;
+    if (speakEnergyToken === lastTokenRef.current) return;
+    lastTokenRef.current = speakEnergyToken;
+    energyRef.current = Math.min(energyRef.current + 0.16 + Math.random() * 0.1, 0.32);
+  }, [phase, speakEnergyToken]);
+
+  const PhaseIcon =
+    phase === "processing" ? Loader2 : phase === "speaking" ? Volume2 : phase === "interrupted" ? Zap : muted ? MicOff : Mic;
   const size = big ? "h-32 w-32" : "h-11 w-11";
+  const reactive = phase === "listening" || phase === "speaking";
 
   return (
     <div className={clsx("relative flex shrink-0 items-center justify-center", big ? "h-52 w-52" : "h-11 w-11")}>
@@ -92,16 +144,21 @@ export default function VoiceOrb({
 
       <motion.button
         onClick={onTap}
-        style={{ scale: phase === "listening" ? smoothScale : 1 }}
+        style={{ scale: reactive ? smoothScale : 1 }}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className={clsx("relative flex items-center justify-center rounded-full", size)}
+        className={clsx(
+          "relative flex items-center justify-center rounded-full",
+          size,
+          phase === "interrupted" && "voice-orb-interrupt"
+        )}
       >
         {/* layered blurred cloud blobs */}
         <span
           className={clsx(
             "absolute inset-0 rounded-full bg-gradient-to-br from-accent via-[#ffe27a] to-[#c98f00] blur-lg",
             phase === "idle" && "voice-orb-idle cloud-layer-1",
+            phase === "processing" && "voice-orb-processing",
             phase === "speaking" && "cloud-speaking"
           )}
         />
@@ -110,8 +167,11 @@ export default function VoiceOrb({
             "absolute inset-[10%] rounded-full bg-gradient-to-tr from-[#ffe27a] via-accent to-[#c98f00] opacity-90 blur-md cloud-layer-2"
           )}
         />
+        {(phase === "error" || errorFlavor) && (
+          <span className="voice-orb-error absolute inset-0 rounded-full bg-red-500 blur-lg" />
+        )}
         <span className="absolute inset-[22%] rounded-full bg-gradient-to-br from-accent to-[#c98f00] shadow-[0_0_40px_rgba(245,197,24,0.35)]" />
-        <PhaseIcon size={big ? 30 : 16} className={clsx("relative z-10 text-ink", phase === "thinking" && "animate-spin")} />
+        <PhaseIcon size={big ? 30 : 16} className={clsx("relative z-10 text-ink", phase === "processing" && "animate-spin")} />
       </motion.button>
     </div>
   );
