@@ -106,3 +106,8 @@ body {
   75% { transform: scale(1.08); }
 }
 .cloud-speaking { animation: cloud-speak-pulse 1.1s ease-in-out infinite; }
+
+@keyframes fadeInScale {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}

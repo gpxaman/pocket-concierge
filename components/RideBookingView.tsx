@@ -11,6 +11,8 @@ import { useAppStore, PaymentSource } from "@/lib/store/useAppStore";
 import { BRAND_LABEL } from "@/lib/payments";
 import { Driver } from "@/lib/data/drivers";
 import BillSummary from "@/components/BillSummary";
+import MapPlaceholder from "@/components/MapPlaceholder";
+import { LocationPin, VehicleMarker } from "@/components/MapPin";
 
 export default function RideBookingView() {
   const searchParams = useSearchParams();
@@ -62,6 +64,9 @@ export default function RideBookingView() {
 
   if (confirmed) {
     const Icon = RIDE_TYPE_ICON[rideType.id];
+    // Driver marker starts a little away from pickup, closing in — a static
+    // stand-in for what would be a live-updating position on a real map.
+    const driverPoint = { x: 32, y: 30 };
     return (
       <div className="px-5 pt-6 pb-10">
         <div className="flex flex-col items-center pt-6 text-center">
@@ -72,7 +77,24 @@ export default function RideBookingView() {
           </p>
         </div>
 
-        <div className="mt-5 rounded-xl2 border border-black/5 bg-white p-4 shadow-sm">
+        <MapPlaceholder className="mt-4 h-40 w-full rounded-xl2 shadow-sm">
+          <svg className="pointer-events-none absolute inset-0 h-full w-full">
+            <line
+              x1={`${driverPoint.x}%`}
+              y1={`${driverPoint.y}%`}
+              x2="50%"
+              y2="54%"
+              stroke="#1a1508"
+              strokeOpacity={0.3}
+              strokeWidth={2}
+              strokeDasharray="5 5"
+            />
+          </svg>
+          <LocationPin x={50} y={54} kind="pickup" />
+          <VehicleMarker x={driverPoint.x} y={driverPoint.y} icon={Icon} />
+        </MapPlaceholder>
+
+        <div className="mt-4 rounded-xl2 border border-black/5 bg-white p-4 shadow-sm">
           <div className="flex items-center gap-3">
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accentSoft text-accentDark">
               <Icon size={22} strokeWidth={1.7} />
