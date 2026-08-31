@@ -745,9 +745,9 @@ export default function HomeAgent() {
   return (
     <>
     <div className="fixed inset-x-0 top-0 bottom-20 z-10 mx-auto flex max-w-md flex-col overflow-hidden bg-gradient-to-b from-[#171106] via-[#0e0a03] to-black">
-      <div className="orb orb-a h-40 w-40 bg-[#1f5f9e] opacity-30" style={{ top: "-3rem", left: "-2rem" }} />
-      <div className="orb orb-b h-32 w-32 bg-[#9fd0f5] opacity-20" style={{ top: "1rem", right: "-2.5rem" }} />
-      <div className="orb orb-c h-28 w-28 bg-white opacity-10" style={{ bottom: "-2.5rem", left: "40%" }} />
+      <div className="orb orb-a h-40 w-40 bg-accent" style={{ top: "-3rem", left: "-2rem" }} />
+      <div className="orb orb-b h-32 w-32 bg-[#ffe27a]" style={{ top: "1rem", right: "-2.5rem" }} />
+      <div className="orb orb-c h-28 w-28 bg-white" style={{ bottom: "-2.5rem", left: "40%" }} />
 
       {started && (
         <div className="relative z-10 flex items-center justify-between px-4 pt-4">

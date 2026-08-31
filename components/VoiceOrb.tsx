@@ -151,22 +151,22 @@ export default function VoiceOrb({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className={clsx(
-          "relative overflow-hidden rounded-full bg-[#0a1622] transition-[filter] duration-300",
+          "relative overflow-hidden rounded-full bg-[#2a1f06] transition-[filter] duration-300",
           size,
           phase === "interrupted" && "voice-orb-interrupt",
           muted && "grayscale opacity-60"
         )}
       >
-        {/* Cloud layers — clipped to the circle by the parent's overflow-hidden, so the haze reads as "inside the orb" rather than a glow bleeding past its edge. */}
+        {/* Cloud layers — clipped to the circle by the parent's overflow-hidden, so the haze reads as "inside the orb" rather than a glow bleeding past its edge. Golden/amber to match the app's own accent palette, not the reference screenshot's blue. */}
         <span
           className={clsx(
-            "absolute -inset-2 bg-gradient-to-br from-white via-[#9fd0f5] to-[#1f5f9e] blur-lg",
+            "absolute -inset-2 bg-gradient-to-br from-white via-[#ffe27a] to-accent blur-lg",
             phase === "idle" && "voice-orb-idle cloud-layer-1",
             phase === "processing" && "voice-orb-processing",
             phase === "speaking" && "cloud-speaking"
           )}
         />
-        <span className="absolute -inset-2 bg-gradient-to-tr from-[#dff3ff] via-[#6fb3e6] to-[#144a80] opacity-80 blur-md cloud-layer-2" />
+        <span className="absolute -inset-2 bg-gradient-to-tr from-[#fff4c2] via-accent to-[#c98f00] opacity-80 blur-md cloud-layer-2" />
         {(phase === "error" || errorFlavor) && <span className="voice-orb-error absolute -inset-2 bg-red-500 blur-lg" />}
       </motion.button>
     </div>
