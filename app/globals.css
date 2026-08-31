@@ -112,8 +112,9 @@ body {
 }
 .voice-orb-processing { animation: orb-processing-pulse 2.6s ease-in-out infinite; }
 
-/* Interrupted — a quick, visible "snap" the instant barge-in is confirmed,
-   sized to match the ~200ms auto-advance back to listening. */
+/* Interrupted — a quick, visible "snap" the instant the user taps the orb
+   to interrupt the AI, sized to match the ~200ms auto-advance back to
+   listening. */
 @keyframes orb-interrupt-snap {
   0% { transform: scale(1); filter: brightness(1); }
   30% { transform: scale(0.86); filter: brightness(1.6); }

@@ -59,7 +59,6 @@ interface PendingImage {
 }
 
 const SILENCE_MS = 700; // how long to wait after the last result before treating a turn as finished
-const BARGE_IN_CONFIRM_MS = 180; // how long a qualifying interim must persist before it's trusted as real speech
 const NO_SPEECH_TIMEOUT_MS = 15_000; // give up and return to idle if nothing at all is heard
 const INTERRUPTED_FLASH_MS = 200; // matches the CSS .voice-orb-interrupt animation duration
 
@@ -92,21 +91,18 @@ export default function HomeAgent() {
   const mutedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sendingRef = useRef(false);
-  const passiveRef = useRef(false); // true while recognition is running silently for barge-in detection during AI speech
   const micStreamRef = useRef<MediaStream | null>(null);
   const pendingImageRef = useRef<PendingImage | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Session-local closures set fresh by whichever startRecognition() call is
-  // currently live — always called through these refs so callers elsewhere
-  // in the file (speak()'s resume, handleOrbTap) never act on a stale
-  // session, the same "re-check live state, don't trust the closure" pattern
-  // used in the rides feature's ride-tracking effect.
+  // Session-local closure set fresh by whichever startRecognition() call is
+  // currently live — always called through this ref so callers elsewhere in
+  // the file (handleOrbTap) never act on a stale session, the same
+  // "re-check live state, don't trust the closure" pattern used in the
+  // rides feature's ride-tracking effect.
   const finalizeNowRef = useRef<(() => void) | null>(null);
-  const promoteRef = useRef<(() => void) | null>(null);
 
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bargeInConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interruptedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -135,10 +131,6 @@ export default function HomeAgent() {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
-    }
-    if (bargeInConfirmTimerRef.current) {
-      clearTimeout(bargeInConfirmTimerRef.current);
-      bargeInConfirmTimerRef.current = null;
     }
     if (interruptedTimerRef.current) {
       clearTimeout(interruptedTimerRef.current);
@@ -171,10 +163,9 @@ export default function HomeAgent() {
   function stopEverything() {
     recognitionRef.current?.abort();
     recognitionRef.current = null;
-    passiveRef.current = false;
-    // Close the queue gate BEFORE cancelling — see the matching comment in
-    // commitBargeIn for why the order matters (cancel()'s onerror can fire
-    // synchronously and would otherwise see a stale `true`).
+    // Close the queue gate BEFORE cancelling — cancel()'s onerror can fire
+    // synchronously and the queue runner's onerror only stops advancing
+    // when it sees queueActiveRef already false (see runQueue).
     queueActiveRef.current = false;
     queuePlayingRef.current = false;
     if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -211,15 +202,13 @@ export default function HomeAgent() {
       transitionPhase("idle");
       return;
     }
-    if (recognitionRef.current && passiveRef.current) {
-      promoteRef.current?.();
-    } else if (!recognitionRef.current) {
-      startRecognition();
-    }
-    // else: already promoted mid-speech via barge-in — nothing to do
+    // The mic is never left running while the AI is speaking (see the big
+    // comment in speak() about self-hearing), so there's never an existing
+    // session to promote here — always a fresh, clean listen.
+    startRecognition();
   }
 
-  function startRecognition(passive = false) {
+  function startRecognition() {
     if (typeof window === "undefined") return;
     const Ctor =
       (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
@@ -228,15 +217,13 @@ export default function HomeAgent() {
     if (!Ctor) {
       setSupported(false);
       setShowTyped(true);
-      if (!passive) transitionPhase("idle");
+      transitionPhase("idle");
       return;
     }
 
     void ensureMicStream();
 
     const rec = new Ctor();
-    // continuous:true so a long AI reply doesn't let the recognizer time out
-    // and silently stop listening for a barge-in partway through.
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = "en-US";
@@ -272,43 +259,6 @@ export default function HomeAgent() {
     }
     finalizeNowRef.current = finalizeAndSend;
 
-    // Called once this session should be the one actively driving the
-    // conversation (either it started that way, or a barge-in/natural
-    // AI-finish promoted it) — arms the timers active listening needs.
-    function armActiveTimers() {
-      if (bargeInConfirmTimerRef.current) {
-        clearTimeout(bargeInConfirmTimerRef.current);
-        bargeInConfirmTimerRef.current = null;
-      }
-      armNoSpeechTimeout();
-      scheduleSilenceFinalize();
-    }
-
-    function commitBargeIn() {
-      if (!passiveRef.current || recognitionRef.current !== rec) return; // already resolved another way — no-op
-      // Close the gate BEFORE cancelling — speechSynthesis.cancel() can
-      // invoke the in-flight utterance's onerror synchronously, and the
-      // queue runner's onerror only stops advancing when it sees
-      // queueActiveRef already false (see runQueue). Cancelling first would
-      // let it read the still-true value and speak the next queued sentence
-      // right through the interruption.
-      queueActiveRef.current = false;
-      queuePlayingRef.current = false;
-      window.speechSynthesis.cancel();
-      streamAbortRef.current?.abort();
-      passiveRef.current = false;
-      transitionPhase("interrupted");
-      armActiveTimers();
-    }
-
-    function promoteToActive() {
-      if (recognitionRef.current !== rec || !passiveRef.current) return;
-      passiveRef.current = false;
-      transitionPhase("listening");
-      armActiveTimers();
-    }
-    promoteRef.current = promoteToActive;
-
     rec.onresult = (e) => {
       let interim = "";
       let finalChunk = "";
@@ -320,39 +270,15 @@ export default function HomeAgent() {
       lastInterim = interim;
       if (finalChunk.trim()) finalTranscript += (finalTranscript ? " " : "") + finalChunk.trim();
 
-      const heardSomething = Boolean(finalChunk.trim() || interim.trim());
-      const qualifies = (finalChunk + interim).trim().length >= 3;
-
-      // Barge-in: the user started talking while the AI was still speaking.
-      // Require a short confirm window (a second qualifying result, or the
-      // timer simply elapsing) before committing, so one stray short blip
-      // doesn't cut the AI off — but nothing said during that window is
-      // lost, since finalTranscript above accumulates unconditionally.
-      if (passiveRef.current && heardSomething && qualifies) {
-        if (bargeInConfirmTimerRef.current) {
-          clearTimeout(bargeInConfirmTimerRef.current);
-          bargeInConfirmTimerRef.current = null;
-          commitBargeIn();
-        } else {
-          bargeInConfirmTimerRef.current = setTimeout(() => {
-            bargeInConfirmTimerRef.current = null;
-            commitBargeIn();
-          }, BARGE_IN_CONFIRM_MS);
-        }
-      }
-
       setCaption(finalTranscript || interim);
-
-      if (!passiveRef.current) {
-        armNoSpeechTimeout();
-        scheduleSilenceFinalize();
-      }
+      armNoSpeechTimeout();
+      scheduleSilenceFinalize();
     };
     rec.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         transitionPhase("denied");
         setShowTyped(true);
-      } else if (!passiveRef.current) {
+      } else {
         transitionPhase("idle");
       }
       if (recognitionRef.current === rec) clearVoiceTimers();
@@ -362,16 +288,12 @@ export default function HomeAgent() {
         recognitionRef.current = null;
         clearVoiceTimers();
       }
-      passiveRef.current = false;
     };
 
     recognitionRef.current = rec;
-    passiveRef.current = passive;
     setCaption("");
-    if (!passive) {
-      transitionPhase("listening");
-      armNoSpeechTimeout();
-    }
+    transitionPhase("listening");
+    armNoSpeechTimeout();
     try {
       rec.start();
     } catch {
@@ -410,11 +332,15 @@ export default function HomeAgent() {
       setErrorFlavor(false);
       resumeAfterSpeaking();
     };
+    // Deliberately NOT listening while this plays: the mic and the speaker
+    // are the same physical hardware, and without real acoustic echo
+    // cancellation (a genuine Web Speech API ceiling — see ensureMicStream's
+    // comment) the recognizer would hear the AI's own voice and transcribe
+    // it as a new user turn, which then gets a new reply, which gets heard
+    // again — a self-sustaining loop that also starves out anything the
+    // user actually says. Interruption is tap-only (see handleOrbTap);
+    // listening always starts fresh only once speech has genuinely stopped.
     window.speechSynthesis.speak(utter);
-
-    // Start listening in the background immediately so talking over the
-    // reply interrupts it, instead of only listening after it finishes.
-    if (!mutedRef.current) startRecognition(true);
   }
 
   /** Runs the sentence queue for a speculatively-streamed reply — chained utterance playback, gated on queueActiveRef. */
@@ -453,7 +379,8 @@ export default function HomeAgent() {
     transitionPhase("speaking");
     setErrorFlavor(false);
     setLoading(false);
-    if (!mutedRef.current) startRecognition(true);
+    // Same reasoning as speak() — no passive listening during playback, to
+    // avoid the mic hearing the speaker and looping on itself.
   }
 
   function handleImageButton() {
@@ -691,11 +618,13 @@ export default function HomeAgent() {
     } else if (phase === "idle" || phase === "denied" || phase === "error") {
       startRecognition();
     } else if (phase === "speaking" || phase === "interrupted") {
-      // onerror -> resumeAfterSpeaking() promotes the still-running passive
-      // recognition, or starts fresh — single code path, no duplicate start.
+      // Only interruption path now (no voice barge-in) — cancelling here
+      // fires the utterance's onerror -> resumeAfterSpeaking(), which starts
+      // a fresh listening session once speech has actually stopped.
       queueActiveRef.current = false;
       queuePlayingRef.current = false;
       streamAbortRef.current?.abort();
+      transitionPhase("interrupted");
       window.speechSynthesis?.cancel();
     }
   }
@@ -705,7 +634,6 @@ export default function HomeAgent() {
       const next = !m;
       if (next) {
         recognitionRef.current?.abort();
-        passiveRef.current = false;
         queueActiveRef.current = false;
         queuePlayingRef.current = false;
         streamAbortRef.current?.abort();
