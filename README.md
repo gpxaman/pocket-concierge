@@ -197,3 +197,15 @@ This is the "web demo" scope from the TRD's phasing, not Phase 1. No real
 identity/auth, no vendor/partner/admin apps, no payment gateway, no DB —
 see `AI_Native_Super_App_TRD.pdf` §2.2 and §30 for what a real Phase 1
 build adds on top of this.
+
+## Codebase structure & testing
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the folder layout, why the two
+zustand stores are split into "slices," and how to add a new domain without
+recreating a giant single file.
+
+```bash
+npm run test       # unit + integration tests (Vitest)
+npm run test:watch # same, in watch mode
+npm run test:e2e   # end-to-end tests (Playwright — run `npx playwright install chromium` once first)
+```

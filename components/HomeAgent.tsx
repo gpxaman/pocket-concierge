@@ -1,40 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Keyboard, Send, RotateCcw, ShoppingBag, Sparkles, Paperclip, X, Info, Share2, SlidersHorizontal, Check, Volume2 } from "lucide-react";
+import { motion } from "framer-motion";
+import { Mic, MicOff, Keyboard, Send, RotateCcw, ShoppingBag, Sparkles, Paperclip, X, Info, Share2, SlidersHorizontal } from "lucide-react";
 import clsx from "clsx";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { AiChatSSEEvent, ChatMessage } from "@/lib/types";
 import { findById } from "@/lib/data/catalog";
 import { todayIso } from "@/lib/dates";
-import ItemCard from "@/components/ItemCard";
+import { cutSentences } from "@/lib/home/cutSentences";
+import { shareOrCopyText } from "@/lib/shareOrCopy";
+import { readImageFile } from "@/lib/imagePicker";
+import Transcript from "@/components/home/Transcript";
+import VoicePickerSheet from "@/components/home/VoicePickerSheet";
 import VoiceOrb, { OrbPhase } from "@/components/VoiceOrb";
 
 function uid() {
   return Math.random().toString(36).slice(2, 10);
-}
-
-function renderInline(text: string) {
-  const normalized = text.replace(/^\s*\*(?!\*)\s+/gm, "• ");
-  const parts = normalized.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) =>
-    part.startsWith("**") && part.endsWith("**") ? (
-      <strong key={i} className="font-semibold">
-        {part.slice(2, -2)}
-      </strong>
-    ) : (
-      <span key={i}>{part}</span>
-    )
-  );
-}
-
-/** Splits a growing text buffer into complete sentences (kept) + an incomplete tail (returned as rest). */
-function cutSentences(buffer: string): { sentences: string[]; rest: string } {
-  const parts = buffer.split(/(?<=[.!?\n])\s*/);
-  if (parts.length <= 1) return { sentences: [], rest: buffer };
-  const rest = parts.pop() ?? "";
-  return { sentences: parts.map((p) => p.trim()).filter(Boolean), rest };
 }
 
 interface SpeechRecognitionLike extends EventTarget {
@@ -172,22 +154,13 @@ export default function HomeAgent() {
 
   async function handleShareTranscript() {
     const text = chatMessages.map((m) => `${m.role === "user" ? "You" : "Concierge"}: ${m.content}`).join("\n");
-    if (!text) return;
-    if (typeof navigator !== "undefined" && navigator.share) {
-      try {
-        await navigator.share({ text, title: "Pocket Concierge conversation" });
-      } catch {
-        // user dismissed the share sheet — fine
-      }
-    } else if (typeof navigator !== "undefined" && navigator.clipboard) {
-      try {
-        await navigator.clipboard.writeText(text);
+    await shareOrCopyText(text, {
+      title: "Pocket Concierge conversation",
+      onCopied: () => {
         setShareCopied(true);
         window.setTimeout(() => setShareCopied(false), 2000);
-      } catch {
-        // clipboard unavailable — fine, this is a nice-to-have
-      }
-    }
+      },
+    });
   }
 
   function clearVoiceTimers() {
@@ -452,17 +425,9 @@ export default function HomeAgent() {
     fileInputRef.current?.click();
   }
 
-  function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setPendingImage({ dataUrl: reader.result, mimeType: file.type });
-      }
-    };
-    reader.readAsDataURL(file);
+  async function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = await readImageFile(e);
+    if (picked) setPendingImage(picked);
   }
 
   async function sendTurn(text: string) {
@@ -819,78 +784,7 @@ export default function HomeAgent() {
         )}
       </div>
 
-      {started && (
-        <div ref={scrollRef} className="relative z-10 flex-1 space-y-3 overflow-y-auto px-4 pb-2 pt-1">
-          <AnimatePresence initial={false}>
-            {chatMessages.map((m) => (
-              <motion.div
-                key={m.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.25 }}
-                className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}
-              >
-                <div className={clsx("max-w-[85%] space-y-2", m.role === "user" ? "items-end" : "items-start")}>
-                  <div
-                    data-role={m.role}
-                    className={clsx(
-                      "whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-                      m.role === "user" ? "bg-accent text-ink" : "bg-white/10 text-white/90"
-                    )}
-                  >
-                    {m.imageDataUrl && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={m.imageDataUrl} alt="Attached" className="mb-2 max-h-40 rounded-lg object-cover" />
-                    )}
-                    {renderInline(m.content)}
-                  </div>
-                  {m.role === "assistant" && m.mode === "fallback" && (
-                    <p className="px-1 text-[10px] text-white/30">
-                      Demo mode — no AI provider reachable right now (check your API keys / provider quota).
-                    </p>
-                  )}
-                  {m.itemIds && m.itemIds.length > 0 && (
-                    <div className="space-y-2">
-                      {m.itemIds.map((id, i) => {
-                        const item = findById(id);
-                        return item ? (
-                          <motion.div
-                            key={id}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.25, delay: 0.08 * i }}
-                          >
-                            <ItemCard item={item} mode="cart" />
-                          </motion.div>
-                        ) : null;
-                      })}
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-
-          {loading && (
-            <div className="flex items-center gap-2 rounded-2xl bg-white/10 px-4 py-2.5 text-xs text-white/50 w-fit">
-              <motion.span
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 2.2, ease: "linear" }}
-                className="text-accent"
-              >
-                <Sparkles size={13} />
-              </motion.span>
-              <span>Thinking</span>
-              <span className="flex gap-0.5">
-                <span className="bounce-dot" style={{ animationDelay: "0ms" }}>●</span>
-                <span className="bounce-dot" style={{ animationDelay: "150ms" }}>●</span>
-                <span className="bounce-dot" style={{ animationDelay: "300ms" }}>●</span>
-              </span>
-            </div>
-          )}
-        </div>
-      )}
+      {started && <Transcript scrollRef={scrollRef} chatMessages={chatMessages} loading={loading} />}
 
       {started && cartCount > 0 && (
         <div className="relative z-10 mx-4 mb-2 flex items-center justify-between rounded-full bg-white/10 px-4 py-2 text-xs text-white/70">
@@ -1017,55 +911,13 @@ export default function HomeAgent() {
       )}
 
       {showVoicePicker && (
-        <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={() => setShowVoicePicker(false)}>
-          <div className="mx-auto max-h-[70vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-[#171106] p-5 pb-8 text-white" onClick={(e) => e.stopPropagation()}>
-            <p className="text-sm font-semibold">Choose a voice</p>
-            <p className="mt-0.5 text-xs text-white/40">Uses your browser's built-in voices — tap one to preview it.</p>
-            {voices.length === 0 ? (
-              <p className="mt-4 text-xs text-white/40">No voices available in this browser yet.</p>
-            ) : (
-              <div className="mt-3 space-y-1">
-                <button
-                  onClick={() => chooseVoice(null)}
-                  className={clsx(
-                    "flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm",
-                    !selectedVoiceURI ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5"
-                  )}
-                >
-                  Default
-                  {!selectedVoiceURI && <Check size={15} className="text-accent" />}
-                </button>
-                {voices
-                  .filter((v) => v.lang.startsWith("en"))
-                  .map((v) => (
-                    <button
-                      key={v.voiceURI}
-                      onClick={() => {
-                        chooseVoice(v.voiceURI);
-                        previewVoice(v);
-                      }}
-                      className={clsx(
-                        "flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-sm",
-                        selectedVoiceURI === v.voiceURI ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5"
-                      )}
-                    >
-                      <span className="min-w-0 flex-1 truncate">
-                        {v.name} <span className="text-white/35">· {v.lang}</span>
-                      </span>
-                      {selectedVoiceURI === v.voiceURI ? (
-                        <Check size={15} className="shrink-0 text-accent" />
-                      ) : (
-                        <Volume2 size={14} className="shrink-0 text-white/25" />
-                      )}
-                    </button>
-                  ))}
-              </div>
-            )}
-            <button onClick={() => setShowVoicePicker(false)} className="mt-4 flex w-full items-center justify-center py-2 text-xs text-white/40">
-              Done
-            </button>
-          </div>
-        </div>
+        <VoicePickerSheet
+          voices={voices}
+          selectedVoiceURI={selectedVoiceURI}
+          onChoose={chooseVoice}
+          onPreview={previewVoice}
+          onClose={() => setShowVoicePicker(false)}
+        />
       )}
 
     {shareCopied && (

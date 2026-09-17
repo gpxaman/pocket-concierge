@@ -3,38 +3,31 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { NOTE_COLORS, NOTE_EMOJIS, NOTE_TTL_MS, STORY_TTL_MS, noteColor, StoryItem, useChatStore } from "@/lib/store/useChatStore";
-import { ChevronLeft, Trash2, Lock, UserCircle2, Check, Plus, X, Camera, Image as ImageIcon, UserPlus } from "lucide-react";
+import { NOTE_TTL_MS, STORY_TTL_MS, StoryItem, useChatStore } from "@/lib/store/useChatStore";
+import { readImageFile } from "@/lib/imagePicker";
+import StoriesRow from "@/components/chat/StoriesRow";
+import StoryViewer from "@/components/chat/StoryViewer";
+import NoteComposer from "@/components/chat/NoteComposer";
+import ContactList from "@/components/chat/ContactList";
+import { ChevronLeft, Lock, UserCircle2, Check, Camera, Image as ImageIcon, UserPlus } from "lucide-react";
 import clsx from "clsx";
 
 export default function ChatIndexPage() {
   const router = useRouter();
   const identity = useChatStore((s) => s.identity);
-  const contacts = useChatStore((s) => s.contacts);
-  const messagesByContact = useChatStore((s) => s.messagesByContact);
-  const unreadByContact = useChatStore((s) => s.unreadByContact);
   const connectionStatus = useChatStore((s) => s.connectionStatus);
   const ensureIdentity = useChatStore((s) => s.ensureIdentity);
-  const removeContact = useChatStore((s) => s.removeContact);
   const connect = useChatStore((s) => s.connect);
-  const onlineIds = useChatStore((s) => s.onlineIds);
-  const notesByContact = useChatStore((s) => s.notesByContact);
-  const storiesByContact = useChatStore((s) => s.storiesByContact);
 
   const myStory = useChatStore((s) => s.myStory);
   const myNote = useChatStore((s) => s.myNote);
   const setMyStory = useChatStore((s) => s.setMyStory);
   const clearMyStory = useChatStore((s) => s.clearMyStory);
-  const setMyNote = useChatStore((s) => s.setMyNote);
-  const clearMyNote = useChatStore((s) => s.clearMyNote);
 
   const [showStorySheet, setShowStorySheet] = useState(false);
   const [showStoryViewer, setShowStoryViewer] = useState(false);
   const [viewingContactStory, setViewingContactStory] = useState<{ username: string; story: StoryItem } | null>(null);
   const [showNoteInput, setShowNoteInput] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const [noteEmoji, setNoteEmoji] = useState<string | undefined>(undefined);
-  const [noteColorId, setNoteColorId] = useState("default");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -45,37 +38,15 @@ export default function ChatIndexPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Story/note are only local right now (see the plan's scoping note) — a
-  // page-load check is enough for expiry, no live timer needed.
   const storyActive = Boolean(myStory && Date.now() - myStory.createdAt < STORY_TTL_MS);
   const noteActive = Boolean(myNote && Date.now() - myNote.createdAt < NOTE_TTL_MS);
 
-  function handleGalleryStory(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setMyStory(reader.result);
-        setShowStorySheet(false);
-      }
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function submitNote(e: React.FormEvent) {
-    e.preventDefault();
-    if (!noteText.trim()) return;
-    setMyNote(noteText, { emoji: noteEmoji, color: noteColorId });
-    setShowNoteInput(false);
-  }
-
-  function openNoteInput() {
-    setNoteText(noteActive ? myNote!.text : "");
-    setNoteEmoji(noteActive ? myNote!.emoji : undefined);
-    setNoteColorId(noteActive ? (myNote!.color ?? "default") : "default");
-    setShowNoteInput(true);
+  async function handleGalleryStory(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = await readImageFile(e);
+    if (picked) {
+      setMyStory(picked.dataUrl);
+      setShowStorySheet(false);
+    }
   }
 
   return (
@@ -119,165 +90,16 @@ export default function ChatIndexPage() {
         </Link>
       )}
 
-      {/* Stories row */}
-      <div className="mt-5 flex gap-4 overflow-x-auto pb-1">
-        <div className="flex shrink-0 flex-col items-center gap-1.5">
-          <button
-            onClick={openNoteInput}
-            className={clsx("max-w-[90px] truncate rounded-2xl rounded-bl-sm border px-2.5 py-1 text-[10px] shadow-sm", !noteActive && "border-black/5 bg-white text-ink/35")}
-            style={
-              noteActive
-                ? {
-                    background: `linear-gradient(135deg, ${noteColor(myNote!.color).from}, ${noteColor(myNote!.color).to})`,
-                    color: noteColor(myNote!.color).text,
-                    borderColor: "transparent",
-                  }
-                : undefined
-            }
-          >
-            {noteActive ? (
-              <>
-                {myNote!.emoji && <span className="mr-1">{myNote!.emoji}</span>}
-                {myNote!.text}
-              </>
-            ) : (
-              "Note..."
-            )}
-          </button>
-          <button onClick={() => (storyActive ? setShowStoryViewer(true) : setShowStorySheet(true))} className="relative">
-            <div
-              className={clsx(
-                "flex h-14 w-14 items-center justify-center rounded-full p-0.5",
-                storyActive ? "bg-gradient-to-br from-accent to-[#c98f00]" : "bg-black/10"
-              )}
-            >
-              <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-paper">
-                {identity?.avatarDataUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={identity.avatarDataUrl} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span className="text-sm font-semibold text-accentDark">{(identity?.username ?? "?").slice(0, 1).toUpperCase()}</span>
-                )}
-              </div>
-            </div>
-            {!storyActive && (
-              <span className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-ink ring-2 ring-paper">
-                <Plus size={12} />
-              </span>
-            )}
-          </button>
-          <span className="text-[10px] text-ink/50">Your story</span>
-        </div>
-
-        {contacts.map((c) => {
-          const contactStory = storiesByContact[c.id];
-          const contactStoryActive = Boolean(contactStory && Date.now() - contactStory.createdAt < STORY_TTL_MS);
-          const contactNote = notesByContact[c.id];
-          const contactNoteActive = Boolean(contactNote && Date.now() - contactNote.createdAt < NOTE_TTL_MS);
-          return (
-            <div key={c.id} className="flex shrink-0 flex-col items-center gap-1.5">
-              {contactNoteActive && contactNote && (
-                <div
-                  className="max-w-[90px] truncate rounded-2xl rounded-bl-sm px-2.5 py-1 text-[10px] shadow-sm"
-                  style={{
-                    background: `linear-gradient(135deg, ${noteColor(contactNote.color).from}, ${noteColor(contactNote.color).to})`,
-                    color: noteColor(contactNote.color).text,
-                  }}
-                >
-                  {contactNote.emoji && <span className="mr-1">{contactNote.emoji}</span>}
-                  {contactNote.text}
-                </div>
-              )}
-              <button
-                onClick={() => (contactStoryActive && contactStory ? setViewingContactStory({ username: c.username, story: contactStory }) : router.push(`/chat/${c.id}`))}
-                className={clsx(!contactNoteActive && "mt-[26px]", "relative")}
-              >
-                <div
-                  className={clsx(
-                    "flex h-14 w-14 items-center justify-center rounded-full p-0.5",
-                    contactStoryActive ? "bg-gradient-to-br from-accent to-[#c98f00]" : ""
-                  )}
-                >
-                  <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-black/5">
-                    {c.avatarDataUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={c.avatarDataUrl} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-sm font-semibold text-ink/50">{c.username.slice(0, 1).toUpperCase()}</span>
-                    )}
-                  </div>
-                </div>
-                {onlineIds.has(c.id) && (
-                  <span className="absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full bg-emerald-500 ring-2 ring-paper" />
-                )}
-              </button>
-              <span className="max-w-[56px] truncate text-[10px] text-ink/50">{c.username}</span>
-            </div>
-          );
-        })}
-      </div>
+      <StoriesRow
+        onOpenNoteInput={() => setShowNoteInput(true)}
+        onOpenStorySheet={() => setShowStorySheet(true)}
+        onViewMyStory={() => setShowStoryViewer(true)}
+        onViewContactStory={setViewingContactStory}
+      />
 
       <p className="mt-5 text-xs font-semibold uppercase tracking-wide text-ink/40">Chats</p>
 
-      <div className="mt-3 space-y-2">
-        {contacts.length === 0 ? (
-          <p className="mt-8 text-center text-sm text-ink/40">
-            No contacts yet — tap "New chat" to add someone by username.
-          </p>
-        ) : (
-          contacts.map((c) => {
-            const msgs = messagesByContact[c.id] ?? [];
-            const last = msgs[msgs.length - 1];
-            const unread = unreadByContact[c.id] ?? 0;
-            const lastPreview = last
-              ? last.audioDataUrl
-                ? "🎤 Voice message"
-                : last.imageDataUrl && !last.text
-                  ? "📷 Photo"
-                  : last.text
-              : "No messages yet";
-            const lastIsMineRead = last?.direction === "out" && last.status === "read";
-            return (
-              <div key={c.id} className="flex items-center gap-2">
-                <Link
-                  href={`/chat/${c.id}`}
-                  className="flex flex-1 items-center gap-3 rounded-xl2 border border-black/5 bg-white p-3 shadow-sm hover:border-accentDark/40"
-                >
-                  <span className="relative shrink-0">
-                    {c.avatarDataUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={c.avatarDataUrl} alt="" className="h-10 w-10 rounded-full object-cover" />
-                    ) : (
-                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accentSoft text-sm font-semibold text-accentDark">
-                        {c.username.slice(0, 1).toUpperCase()}
-                      </div>
-                    )}
-                    {onlineIds.has(c.id) && (
-                      <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
-                    )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-ink">@{c.username}</p>
-                    <p className={clsx("truncate text-xs", lastIsMineRead ? "text-accentDark" : "text-ink/45")}>{lastPreview}</p>
-                  </div>
-                  {unread > 0 && (
-                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-bold text-ink">
-                      {unread}
-                    </span>
-                  )}
-                </Link>
-                <button
-                  onClick={() => removeContact(c.id)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink/30 hover:text-red-500"
-                  title="Remove contact"
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            );
-          })
-        )}
-      </div>
+      <ContactList />
 
       {identity?.username && (
         <p className="mt-6 inline-flex items-center gap-1 text-[10px] text-ink/30">
@@ -326,144 +148,33 @@ export default function ChatIndexPage() {
       )}
 
       {showStoryViewer && storyActive && myStory && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/90 p-6" onClick={() => setShowStoryViewer(false)}>
-          <div className="relative w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={myStory.dataUrl} alt="Your story" className="w-full rounded-xl2" />
-            <div className="mt-3 flex items-center justify-between">
-              <p className="text-xs text-white/60">{new Date(myStory.createdAt).toLocaleString()}</p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    clearMyStory();
-                    setShowStoryViewer(false);
-                  }}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-                >
-                  <Trash2 size={14} />
-                </button>
-                <button
-                  onClick={() => setShowStoryViewer(false)}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <StoryViewer
+          dataUrl={myStory.dataUrl}
+          caption={new Date(myStory.createdAt).toLocaleString()}
+          onClose={() => setShowStoryViewer(false)}
+          onDelete={() => {
+            clearMyStory();
+            setShowStoryViewer(false);
+          }}
+        />
       )}
 
       {viewingContactStory && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/90 p-6" onClick={() => setViewingContactStory(null)}>
-          <div className="relative w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={viewingContactStory.story.dataUrl} alt={`@${viewingContactStory.username}'s story`} className="w-full rounded-xl2" />
-            <div className="mt-3 flex items-center justify-between">
-              <p className="text-xs text-white/60">
-                @{viewingContactStory.username} · {new Date(viewingContactStory.story.createdAt).toLocaleString()}
-              </p>
-              <button
-                onClick={() => setViewingContactStory(null)}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          </div>
-        </div>
+        <StoryViewer
+          dataUrl={viewingContactStory.story.dataUrl}
+          caption={`@${viewingContactStory.username} · ${new Date(viewingContactStory.story.createdAt).toLocaleString()}`}
+          onClose={() => setViewingContactStory(null)}
+        />
       )}
 
       {showNoteInput && (
-        <div className="fixed inset-0 z-40 flex items-end bg-black/40" onClick={() => setShowNoteInput(false)}>
-          <form onSubmit={submitNote} className="w-full rounded-t-2xl bg-white p-4 pb-6" onClick={(e) => e.stopPropagation()}>
-            <p className="mb-3 text-sm font-semibold text-ink">Share a thought</p>
-
-            {/* Live preview, styled exactly like the row bubble it becomes */}
-            <div className="flex justify-center">
-              <div
-                className="max-w-[220px] truncate rounded-2xl rounded-bl-sm px-4 py-2 text-sm shadow-sm"
-                style={{ background: `linear-gradient(135deg, ${noteColor(noteColorId).from}, ${noteColor(noteColorId).to})`, color: noteColor(noteColorId).text }}
-              >
-                {noteEmoji && <span className="mr-1">{noteEmoji}</span>}
-                {noteText.trim() || <span className="opacity-50">What's on your mind?</span>}
-              </div>
-            </div>
-
-            <input
-              autoFocus
-              value={noteText}
-              onChange={(e) => setNoteText(e.target.value.slice(0, 60))}
-              placeholder="What's on your mind?"
-              className="mt-3 w-full rounded-xl border border-black/10 px-3 py-2.5 text-sm outline-none focus:border-accentDark"
-            />
-            <p className="mt-1 text-right text-[10px] text-ink/30">{noteText.length}/60 · visible for 24h</p>
-
-            <p className="mt-3 text-[11px] font-medium text-ink/50">Background</p>
-            <div className="mt-1.5 flex gap-2">
-              {NOTE_COLORS.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setNoteColorId(c.id)}
-                  title={c.label}
-                  className={clsx("h-7 w-7 shrink-0 rounded-full border-2", noteColorId === c.id ? "border-ink" : "border-transparent")}
-                  style={{ background: `linear-gradient(135deg, ${c.from}, ${c.to})` }}
-                />
-              ))}
-            </div>
-
-            <p className="mt-3 text-[11px] font-medium text-ink/50">Emoji badge</p>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => setNoteEmoji(undefined)}
-                className={clsx(
-                  "flex h-8 w-8 items-center justify-center rounded-full border text-xs text-ink/40",
-                  !noteEmoji ? "border-ink" : "border-black/10"
-                )}
-                title="None"
-              >
-                <X size={13} />
-              </button>
-              {NOTE_EMOJIS.map((e) => (
-                <button
-                  key={e}
-                  type="button"
-                  onClick={() => setNoteEmoji(e)}
-                  className={clsx("flex h-8 w-8 items-center justify-center rounded-full border text-base", noteEmoji === e ? "border-ink bg-accentSoft" : "border-transparent")}
-                >
-                  {e}
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-4 flex gap-2">
-              <button
-                type="submit"
-                disabled={!noteText.trim()}
-                className="rounded-full bg-accent px-4 py-2 text-xs font-semibold text-ink disabled:opacity-40"
-              >
-                Share
-              </button>
-              {noteActive && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearMyNote();
-                    setShowNoteInput(false);
-                  }}
-                  className="rounded-full px-4 py-2 text-xs text-red-500"
-                >
-                  Clear note
-                </button>
-              )}
-              <button type="button" onClick={() => setShowNoteInput(false)} className="rounded-full px-4 py-2 text-xs text-ink/50">
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
+        <NoteComposer
+          initialText={noteActive ? myNote!.text : ""}
+          initialEmoji={noteActive ? myNote!.emoji : undefined}
+          initialColorId={noteActive ? (myNote!.color ?? "default") : "default"}
+          noteActive={noteActive}
+          onClose={() => setShowNoteInput(false)}
+        />
       )}
     </div>
   );

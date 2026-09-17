@@ -7,3 +7,6 @@ npm-debug.log*
 .claude
 tsconfig.tsbuildinfo
 next-env.d.ts
+test-results
+playwright-report
+coverage
