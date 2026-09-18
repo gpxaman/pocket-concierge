@@ -23,7 +23,7 @@
     "demo"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.22.2"
   },
   "scripts": {
     "dev": "next dev",
