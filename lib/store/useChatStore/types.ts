@@ -36,6 +36,9 @@ export interface ChatIdentity {
   username: string | null;
   publicKeyJwk: JsonWebKey;
   privateKeyJwk: JsonWebKey;
+  /** Proves control of `id` to the relay on connect — see lib/chat/crypto.ts's signChallenge. */
+  signingPublicKeyJwk: JsonWebKey;
+  signingPrivateKeyJwk: JsonWebKey;
   phone?: string;
   avatarDataUrl?: string;
 }

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useChatStore } from "@/lib/store/useChatStore";
 import { handleIncoming } from "./internal";
 import { transport } from "./transport";
-import { deriveSharedKey, encryptMessage, generateIdentityKeyPair } from "@/lib/chat/crypto";
+import { deriveSharedKey, encryptMessage, generateIdentityKeyPair, generateSigningKeyPair } from "@/lib/chat/crypto";
 
 // Simulates a real relay delivery landing on "my" client: a genuine ECDH
 // keypair on each side, a message encrypted the way a real peer's
@@ -22,9 +22,17 @@ describe("useChatStore incoming message integration", () => {
   it("decrypts an incoming message from a known contact and increments its unread count", async () => {
     const me = await generateIdentityKeyPair();
     const bob = await generateIdentityKeyPair();
+    const meSigning = await generateSigningKeyPair();
 
     useChatStore.setState({
-      identity: { id: "me-id", privateKeyJwk: me.privateKeyJwk, publicKeyJwk: me.publicKeyJwk, username: "me_user" },
+      identity: {
+        id: "me-id",
+        privateKeyJwk: me.privateKeyJwk,
+        publicKeyJwk: me.publicKeyJwk,
+        signingPublicKeyJwk: meSigning.signingPublicKeyJwk,
+        signingPrivateKeyJwk: meSigning.signingPrivateKeyJwk,
+        username: "me_user",
+      },
     });
     const bobContact = { id: "contact-bob", username: "bob", publicKeyJwk: bob.publicKeyJwk, addedAt: Date.now() };
     useChatStore.setState({ contacts: [bobContact] });
@@ -44,7 +52,17 @@ describe("useChatStore incoming message integration", () => {
   it("accumulates unread count across multiple incoming messages", async () => {
     const me = await generateIdentityKeyPair();
     const bob = await generateIdentityKeyPair();
-    useChatStore.setState({ identity: { id: "me-id", privateKeyJwk: me.privateKeyJwk, publicKeyJwk: me.publicKeyJwk, username: "me_user" } });
+    const meSigning = await generateSigningKeyPair();
+    useChatStore.setState({
+      identity: {
+        id: "me-id",
+        privateKeyJwk: me.privateKeyJwk,
+        publicKeyJwk: me.publicKeyJwk,
+        signingPublicKeyJwk: meSigning.signingPublicKeyJwk,
+        signingPrivateKeyJwk: meSigning.signingPrivateKeyJwk,
+        username: "me_user",
+      },
+    });
     const bobContact = { id: "contact-bob", username: "bob", publicKeyJwk: bob.publicKeyJwk, addedAt: Date.now() };
     useChatStore.setState({ contacts: [bobContact] });
     const bobSharedKey = await deriveSharedKey(bob.privateKeyJwk, me.publicKeyJwk);

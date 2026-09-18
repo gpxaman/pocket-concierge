@@ -6,6 +6,7 @@
 // ../internal.ts rather than inlining logic here, so this file stays a
 // dispatch table you can scan.
 import { StateCreator } from "zustand";
+import { signChallenge } from "@/lib/chat/crypto";
 import { transport } from "../transport";
 import { CallKind, ChatState, ConnectionSlice, NoteItem, StoryItem } from "../types";
 import { flushOutbox, handleAck, handleIncoming, pushMyStatus, reclaimUsernameIfAny, relayUrl, teardownCallResources, updateMessage } from "../internal";
@@ -26,9 +27,10 @@ export const createConnectionSlice: StateCreator<ChatState, [], [], ConnectionSl
     const ws = new WebSocket(relayUrl());
     transport.socket = ws;
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "hello", id: identity.id }));
-    };
+    // No hello on open — the relay sends a fresh per-connection challenge
+    // first, and only trusts `id` once we've signed it (see the "challenge"
+    // branch below). Without this, any socket that simply claimed an id
+    // would be believed, letting one user hijack another's live connection.
     ws.onmessage = (ev) => {
       let msg: { type: string; [k: string]: unknown };
       try {
@@ -36,7 +38,25 @@ export const createConnectionSlice: StateCreator<ChatState, [], [], ConnectionSl
       } catch {
         return;
       }
-      if (msg.type === "welcome") {
+      if (msg.type === "challenge") {
+        void signChallenge(identity.signingPrivateKeyJwk, msg.nonce as string).then((signature) => {
+          if (transport.socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(
+            JSON.stringify({
+              type: "hello",
+              id: identity.id,
+              signature,
+              signingPublicKeyJwk: identity.signingPublicKeyJwk,
+            })
+          );
+        });
+      } else if (msg.type === "auth_failed") {
+        // Someone else's connection is already bound to this id under a
+        // different signing key (or the signature was otherwise invalid) —
+        // do not retry with the same id, that would just loop forever.
+        set({ connectionStatus: "offline" });
+        ws.close();
+      } else if (msg.type === "welcome") {
         set({ connectionStatus: "online" });
         flushOutbox(set, get);
         reclaimUsernameIfAny(get);

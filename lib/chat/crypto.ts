@@ -26,6 +26,38 @@ export async function generateIdentityKeyPair(): Promise<KeyPairJwk> {
   return { publicKeyJwk, privateKeyJwk };
 }
 
+// A separate ECDSA keypair (WebCrypto won't let one CryptoKey object do both
+// ECDH and ECDSA, even on the same curve/same underlying scalar) used only
+// to prove identity to the relay: connecting and claiming to be id X used to
+// require no proof at all — the relay just believed whichever socket said
+// so, which let anyone who learned/guessed an id hijack that live
+// connection (steal their incoming queue, overwrite their username
+// directory entry with a different public key, end their calls, etc). Now
+// the relay challenges every connection with a nonce, and the client must
+// sign it with this key to be trusted as that id — see the "challenge"/
+// "hello" exchange in connectionSlice.ts's connect() and the matching
+// verification in server/chat-relay.mjs.
+export interface SigningKeyPairJwk {
+  signingPublicKeyJwk: JsonWebKey;
+  signingPrivateKeyJwk: JsonWebKey;
+}
+
+export async function generateSigningKeyPair(): Promise<SigningKeyPairJwk> {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: CURVE }, true, ["sign", "verify"]);
+  const [signingPublicKeyJwk, signingPrivateKeyJwk] = await Promise.all([
+    crypto.subtle.exportKey("jwk", pair.publicKey),
+    crypto.subtle.exportKey("jwk", pair.privateKey),
+  ]);
+  return { signingPublicKeyJwk, signingPrivateKeyJwk };
+}
+
+/** Signs the relay's connection challenge nonce, proving control of the identity's signing key. */
+export async function signChallenge(signingPrivateKeyJwk: JsonWebKey, nonce: string): Promise<string> {
+  const key = await crypto.subtle.importKey("jwk", signingPrivateKeyJwk, { name: "ECDSA", namedCurve: CURVE }, false, ["sign"]);
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(nonce));
+  return bufToBase64(sig);
+}
+
 async function importPrivateKey(jwk: JsonWebKey): Promise<CryptoKey> {
   return crypto.subtle.importKey("jwk", jwk, { name: "ECDH", namedCurve: CURVE }, true, ["deriveKey"]);
 }

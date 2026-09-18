@@ -99,7 +99,18 @@ yet).
 Crypto: ECDH (P-256) key agreement per pair + AES-GCM for the message
 content. Message routing is still by internal id, not username — the relay
 only ever forwards `{iv, ciphertext}` blobs by recipient id and cannot
-decrypt anything. Both the message queue (for offline recipients) and the
+decrypt anything.
+
+**Connection authentication:** a contact's internal id is visible in places
+like the `/chat/[contactId]` URL, so the relay never just believes a
+connection's claimed id — every socket is challenged with a random nonce on
+connect and must sign it with that identity's ECDSA key (separate from the
+ECDH encryption key) before `hello` is accepted. The first connection ever
+seen for an id binds its signing key (trust-on-first-use); every later
+connection claiming that id must sign with the *same* key or is rejected —
+see `server/chat-relay.mjs` and `server/chat-relay.security.test.ts`.
+
+Both the message queue (for offline recipients) and the
 username directory are in-memory only and reset if the relay restarts;
 clients silently re-claim their username on reconnect, but anyone who
 hasn't reconnected yet is briefly unfindable until they do (no DB in this
