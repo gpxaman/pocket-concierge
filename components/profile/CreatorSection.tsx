@@ -108,7 +108,7 @@ export default function CreatorSection({ open, onToggle }: { open: boolean; onTo
           )}
 
           {filters.length === 0 && !showFilterEditor && (
-            <p className="text-xs text-ink/35">No filters yet — create one and it'll show up in Snap.</p>
+            <p className="text-xs text-ink/35">No filters yet — create one and it&apos;ll show up in Snap.</p>
           )}
 
           <div className="grid grid-cols-3 gap-2">

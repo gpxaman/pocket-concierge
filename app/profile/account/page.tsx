@@ -122,7 +122,7 @@ export default function ProfileAccountPage() {
                   {usernameStatus === "checking" ? "Checking…" : "Save"}
                 </button>
               </div>
-              {usernameStatus === "taken" && <p className="mt-1 text-xs text-red-500">That username's taken — try another.</p>}
+              {usernameStatus === "taken" && <p className="mt-1 text-xs text-red-500">That username&apos;s taken — try another.</p>}
               {usernameStatus === "invalid" && (
                 <p className="mt-1 text-xs text-red-500">3-20 letters, numbers or underscores only.</p>
               )}

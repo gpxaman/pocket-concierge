@@ -153,7 +153,7 @@ export default function ActivityList() {
                   </div>
                   {errorId === t.id && (
                     <p className="mt-2 text-xs font-medium text-red-600">
-                      Couldn't authorize — check your balance or card and try again.
+                      Couldn&apos;t authorize — check your balance or card and try again.
                     </p>
                   )}
                 </div>

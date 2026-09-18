@@ -20,7 +20,7 @@ export default function VoicePickerSheet({
     <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={onClose}>
       <div className="mx-auto max-h-[70vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-[#171106] p-5 pb-8 text-white" onClick={(e) => e.stopPropagation()}>
         <p className="text-sm font-semibold">Choose a voice</p>
-        <p className="mt-0.5 text-xs text-white/40">Uses your browser's built-in voices — tap one to preview it.</p>
+        <p className="mt-0.5 text-xs text-white/40">Uses your browser&apos;s built-in voices — tap one to preview it.</p>
         {voices.length === 0 ? (
           <p className="mt-4 text-xs text-white/40">No voices available in this browser yet.</p>
         ) : (

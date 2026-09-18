@@ -16,7 +16,7 @@ export default function ContactList() {
     <div className="mt-3 space-y-2">
       {contacts.length === 0 ? (
         <p className="mt-8 text-center text-sm text-ink/40">
-          No contacts yet — tap "New chat" to add someone by username.
+          No contacts yet — tap &quot;New chat&quot; to add someone by username.
         </p>
       ) : (
         contacts.map((c) => {

@@ -2,13 +2,36 @@
   "name": "pocket-concierge",
   "version": "0.1.0",
   "private": true,
+  "description": "An AI-native super-app demo: a voice-first concierge that can search, compare, book, and pay across a mock ride/food/grocery/hotel catalog, plus end-to-end encrypted chat and WebRTC calling.",
+  "license": "MIT",
+  "author": "Aman Kumar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gpxaman/pocket-concierge.git"
+  },
+  "homepage": "https://github.com/gpxaman/pocket-concierge#readme",
+  "bugs": {
+    "url": "https://github.com/gpxaman/pocket-concierge/issues"
+  },
+  "keywords": [
+    "nextjs",
+    "ai-agent",
+    "voice-assistant",
+    "zustand",
+    "e2e-encryption",
+    "webrtc",
+    "demo"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev",
     "chat-server": "node server/chat-relay.mjs",
     "dev:all": "concurrently -n web,chat -c blue,magenta \"npm run dev\" \"npm run chat-server\"",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
@@ -36,6 +59,8 @@
     "@vitejs/plugin-react": "^6.1.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^10.0.5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
     "jsdom": "^30.1.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",

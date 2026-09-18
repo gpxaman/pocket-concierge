@@ -1,5 +1,8 @@
 # Pocket Concierge — AI concierge demo
 
+[![CI](https://github.com/gpxaman/pocket-concierge/actions/workflows/ci.yml/badge.svg)](https://github.com/gpxaman/pocket-concierge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 A working slice of the AI-Native Super App PRD/TRD: an AI-first home,
 a mock shared service catalog (electronics, food, grocery, fashion, hotels,
 rides, services), a manual Explore marketplace over the *same* catalog, and
@@ -31,24 +34,25 @@ For the real reasoning concierge — a tool-use loop over `search_catalog` /
 copy `.env.example` to `.env.local` and set one of:
 
 ```
-GEMINI_API_KEY=...      # checked first — get one at https://aistudio.google.com/apikey
+GEMINI_API_KEY=...        # checked first — get one at https://aistudio.google.com/apikey
 ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=...    # checked last — rotates across free tool-calling models
 ```
 
 Restart `npm run dev` after adding a key (env vars are read at process start).
 
 ## Voice mode
 
-Tap the mic icon in the input bar for a full-screen, ChatGPT-style voice
-mode (`components/VoiceOverlay.tsx`): an animated orb that listens via the
-browser's Web Speech API, sends what you said through the same
-`/api/ai/chat` endpoint as text chat, and speaks the reply back
+The AI tab (`components/HomeAgent.tsx`) *is* a voice-first concierge, not a
+text chat with a voice toggle bolted on: tap the animated orb
+(`components/VoiceOrb.tsx`) and it listens via the browser's Web Speech
+API, sends what you said through `/api/ai/chat`, and speaks the reply back
 (`speechSynthesis`) before listening again — a continuous loop until you
-close it. Tap the keyboard icon any time to type instead of talking; both
-paths write into the same shared conversation, so switching mid-task keeps
-context. Voice recognition needs a Chromium-based browser and mic
-permission — unsupported browsers (or a denied prompt) fall straight back
-to the typed field.
+tap to interrupt or mute. Tap the keyboard icon any time to type instead of
+talking; both paths write into the same shared conversation, so switching
+mid-task keeps context. Voice recognition needs a Chromium-based browser
+and mic permission — unsupported browsers (or a denied prompt) fall
+straight back to the typed field.
 
 ## Snap (camera + filters)
 
@@ -123,7 +127,7 @@ tunnel or deployment, which is out of scope here.
 
 Inside a conversation, the phone/video icons next to the contact's name
 start a real 1:1 WebRTC call (`lib/chat/webrtc.ts`, call state and
-signaling in `lib/store/useChatStore.ts`, UI in
+signaling in `lib/store/useChatStore/`, UI in
 `components/CallOverlay.tsx`, mounted globally so an incoming call reaches
 you from anywhere in the app, not just the chat screen). The relay
 (`server/chat-relay.mjs`) only passes through SDP offer/answer and trickled
@@ -145,58 +149,62 @@ for a demo-scope relay, not something client config can fix.
 
 ## Rides (Uber/Ola-style) and food delivery (Zomato/DoorDash-style)
 
-Tapping **Rides** or **Food** in Explore skips the generic catalog list for
-a dedicated booking flow with live tracking:
+Tapping **Rides** in Explore skips the generic catalog list for a dedicated
+booking flow with real-time (not sped-up) live tracking
+(`app/explore/rides/page.tsx`, `components/rides/RideRequestPanel.tsx` +
+`RideTrackingView.tsx`): enter pickup/drop, pick a ride type with a live
+fare quote (`lib/pricing.ts`'s `priceRide`, over `lib/data/rideTypes.ts`),
+request, and it authorizes payment upfront through the exact same
+wallet/card flow as everything else. A deterministic driver-matching
+simulation (`lib/ridesim.ts`, driven by `lib/rides/useRideMatching.ts`)
+then assigns a real driver with name/vehicle/plate/rating, and the ride
+auto-progresses (`lib/rides/useRideAutoAdvance.ts`) through Searching →
+Driver Assigned → En Route → Arrived → In Progress → Completed on an
+animated abstract map (`components/rides/RideMap.tsx` — no real
+maps/geocoding API or key required) — then a post-ride star rating.
 
-- **Rides** (`app/explore/rides/page.tsx`): enter pickup/destination, pick a
-  tier (Auto/Mini/Sedan/XL) with a live fare quote (`lib/rides.ts` — a
-  deterministic mock distance from the pickup+destination pair, so quoting
-  the same route twice gives the same fare, occasionally with a small
-  "demand surge" for flavor), request, and it authorizes payment upfront
-  through the exact same wallet/card flow as everything else, then hands
-  off to a live-tracking screen that auto-progresses through the PRD's own
-  ride lifecycle (Searching → Driver Assigned → Arriving → Arrived →
-  Started → Completed) with a randomly assigned driver, name/vehicle/plate/
-  rating, and a live ETA — then a post-ride star rating.
-- **Food** (`app/explore/food/page.tsx`): browse the existing food catalog
-  as restaurant cards, order with delivery fee + platform fee shown
-  transparently, and track it through the PRD's food lifecycle (Pending
-  Vendor → Preparing → Rider Assigned → Picked Up → Delivered) the same way.
-
-Both reuse one shared component, `components/LiveTrackMap.tsx` — an
-abstract animated route (no real maps/geocoding API, no key required) with
-a marker that eases along a curve as the phase progresses. Both also reuse
-the existing `Transaction` lifecycle in `useAppStore` (`advanceTransaction`
-is called at the right moments so the ride/order shows up correctly in
-Activity and Payments' order history once it completes), rather than
-inventing a parallel order-tracking system.
+**Food** (`app/explore/food/page.tsx`) reuses the same catalog and cart as
+every other category: browse restaurants, order with delivery fee +
+platform fee shown transparently (`lib/pricing.ts`'s `priceCart`), and it
+becomes a regular `Transaction` you progress from Activity's "Simulate next
+step" button (`pending vendor → in progress → completed`) — it does not
+currently have a dedicated live-tracking map the way rides does.
 
 ## What maps to what in the PRD/TRD
 
 | PRD/TRD concept | Where |
 |---|---|
-| AI concierge home, quick actions, conversational follow-up | `components/ChatPanel.tsx` |
-| Voice interaction (FR-AI-002) | `components/VoiceOverlay.tsx` |
-| Manual marketplace (`AI \| Snap \| Chat \| Explore \| Activity \| Payments \| Profile`) | `components/BottomNav.tsx`, `app/*` |
-| Service Registry / shared catalog | `lib/data/catalog.ts` (AI and Explore both read this) |
-| Typed, read-only AI tool contracts | `lib/ai/tools.ts` |
-| "Search/compare/recommend: no confirmation; purchase: authorization required" | `lib/store/useAppStore.ts` (`createDraft` vs `authorizeTransaction`), `app/activity/page.tsx` |
-| Transaction state machines (order/booking/ride lifecycles) | `useAppStore` `LIFECYCLES`, "Simulate next step" on Activity |
-| Saved cards ("never store raw payment credentials", TRD §6.2) + order history / ledger | `app/wallet/page.tsx`, `lib/payments.ts` |
-| Profile / Preferences / Memory with view/edit/delete/disable | `app/profile/page.tsx` |
-| Auditable AI action trail | `useAppStore.logAudit`, audit panel on Profile |
-| Direct messages (not in the original PRD — added on request) | `app/chat/*`, `lib/chat/crypto.ts`, `server/chat-relay.mjs` |
+| AI concierge home, voice-first, conversational follow-up | `components/HomeAgent.tsx`, `components/VoiceOrb.tsx` |
+| Voice interaction (FR-AI-002) | `components/HomeAgent.tsx` (Web Speech API + `speechSynthesis`) |
+| Manual marketplace (`AI \| Explore \| Snap \| Chat \| Profile` bottom nav; Activity/Payments live under Profile) | `components/BottomNav.tsx`, `app/*` |
+| Service Registry / shared catalog | `lib/data/catalog/` (AI and Explore both read this) |
+| Typed, read-only AI tool contracts | `lib/ai/tools.ts`, provider wiring in `lib/ai/providers/` |
+| "Search/compare/recommend: no confirmation; purchase: authorization required" | `lib/store/useAppStore/slices/transactionsSlice.ts` (`createDraft` vs `authorizeTransaction`), `app/activity/page.tsx` |
+| Transaction state machines (order/booking/ride lifecycles) | `lib/store/useAppStore/helpers.ts`'s `LIFECYCLES`, "Simulate next step" on Activity |
+| Saved cards ("never store raw payment credentials", TRD §6.2) + order history / ledger | `app/wallet/page.tsx` (`components/payments/`), `lib/payments.ts` |
+| Profile / Preferences / Memory with view/edit/delete/disable | `app/profile/page.tsx` (`components/profile/`) |
+| Auditable AI action trail | `useAppStore.logAudit`, `components/profile/AuditSection.tsx` |
+| Direct messages (not in the original PRD — added on request) | `app/chat/*`, `lib/chat/crypto.ts`, `lib/store/useChatStore/`, `server/chat-relay.mjs` |
 | Voice/video calls (not in the original PRD — added on request) | `lib/chat/webrtc.ts`, `components/CallOverlay.tsx` |
 | Camera + filters, creator registration (not in the original PRD — added on request) | `app/snap/page.tsx`, `lib/store/useSnapStore.ts`, `components/FilterEditor.tsx` |
-| Ride booking + live tracking (PRD's own ride lifecycle, example 14) | `app/explore/rides/page.tsx`, `lib/store/useRideStore.ts`, `lib/rides.ts` |
-| Food ordering + live tracking (PRD's own food lifecycle, example 14) | `app/explore/food/page.tsx`, `lib/store/useFoodOrderStore.ts`, `lib/food.ts` |
+| Ride booking + live tracking (PRD's own ride lifecycle, example 14) | `app/explore/rides/page.tsx`, `components/rides/`, `lib/rides/`, `lib/ridesim.ts` |
+| Food ordering (PRD's own food lifecycle, example 14 — tracked via Activity, no dedicated live map yet) | `app/explore/food/page.tsx`, `lib/store/useAppStore/slices/ordersSlice.ts`, `lib/pricing.ts` |
 
 ## Known gaps (intentionally out of scope for this slice)
 
-This is the "web demo" scope from the TRD's phasing, not Phase 1. No real
-identity/auth, no vendor/partner/admin apps, no payment gateway, no DB —
-see `AI_Native_Super_App_TRD.pdf` §2.2 and §30 for what a real Phase 1
-build adds on top of this.
+This project implements a "web demo" scope, not a production Phase 1
+build. Notably missing, by design:
+
+- No real identity/authentication — anyone opening the app gets a fresh
+  local profile.
+- No real database — all state lives in the browser (`localStorage` via
+  zustand); clearing site data resets everything.
+- No payment gateway — wallet/card flows authorize against local mock
+  state, never a real processor.
+- No vendor/partner/admin surfaces — this is the end-user app only.
+- No TURN server for WebRTC calls (see "Voice & video calls" above) and no
+  dedicated live-tracking map for food orders (see "Rides ... and food
+  delivery" above).
 
 ## Codebase structure & testing
 
@@ -209,3 +217,15 @@ npm run test       # unit + integration tests (Vitest)
 npm run test:watch # same, in watch mode
 npm run test:e2e   # end-to-end tests (Playwright — run `npx playwright install chromium` once first)
 ```
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for
+the local setup, pre-PR checklist, and code style this project follows.
+Please also read the [Code of Conduct](./CODE_OF_CONDUCT.md). Found a
+security issue? See [SECURITY.md](./SECURITY.md) instead of opening a
+public issue.
+
+## License
+
+[MIT](./LICENSE) © Aman Kumar

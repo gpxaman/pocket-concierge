@@ -892,7 +892,7 @@ export default function HomeAgent() {
               <p>Personalization: {personalizationEnabled ? "On" : "Off"}</p>
               <p>Remembered facts: {memory.length}</p>
               <p>Messages this session: {chatMessages.length}</p>
-              {!supported && <p className="text-amber-300/80">Voice input isn't supported in this browser — use the keyboard.</p>}
+              {!supported && <p className="text-amber-300/80">Voice input isn&apos;t supported in this browser — use the keyboard.</p>}
             </div>
             <button
               onClick={() => {

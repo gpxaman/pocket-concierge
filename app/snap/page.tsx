@@ -122,7 +122,7 @@ function SnapPageInner() {
       {permission === "denied" && (
         <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-white/60">
           <CameraOff size={28} />
-          <p className="text-sm">Camera access was denied — allow it in your browser's site settings to use Snap.</p>
+          <p className="text-sm">Camera access was denied — allow it in your browser&apos;s site settings to use Snap.</p>
         </div>
       )}
       {permission !== "denied" && (

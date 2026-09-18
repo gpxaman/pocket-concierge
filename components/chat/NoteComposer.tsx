@@ -44,7 +44,7 @@ export default function NoteComposer({
             style={{ background: `linear-gradient(135deg, ${noteColor(noteColorId).from}, ${noteColor(noteColorId).to})`, color: noteColor(noteColorId).text }}
           >
             {noteEmoji && <span className="mr-1">{noteEmoji}</span>}
-            {noteText.trim() || <span className="opacity-50">What's on your mind?</span>}
+            {noteText.trim() || <span className="opacity-50">What&apos;s on your mind?</span>}
           </div>
         </div>
 

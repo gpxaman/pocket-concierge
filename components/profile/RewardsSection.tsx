@@ -43,7 +43,7 @@ export default function RewardsSection({ open, onToggle }: { open: boolean; onTo
           </p>
         </div>
       ) : (
-        <p className="mt-3 text-[11px] font-medium text-accentDark">You've reached the top tier — Diamond.</p>
+        <p className="mt-3 text-[11px] font-medium text-accentDark">You&apos;ve reached the top tier — Diamond.</p>
       )}
 
       <p className="mt-4 text-xs font-medium text-ink/60">You earn 1 point for every ₹10 spent on orders, bookings and rides.</p>
